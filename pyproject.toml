@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qbit-quick"
+version = "1.0.0"
+authors = [
+    { name = "TwistedSystem", email = "twistedsystem8@gmail.com" },
+]
+description = "qBittorrent racing tools"
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["qBittorrent", "racing"]
+license = { text = "GPL-3.0-or-later" }
+classifiers = [
+    "Programming Language :: Python"
+]
+dependencies = [
+    "platformdirs",
+    "qbittorrent-api"
+]
+
+[project.optional-dependencies]
+dev = [
+    "tox"
+]
+
+[project.scripts]
+qbit-quick = "qbitquick.qbit_quick:main"

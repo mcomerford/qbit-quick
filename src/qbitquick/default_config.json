@@ -1,0 +1,12 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "username": "admin",
+  "password": "adminadmin",
+  "pausing": true,
+  "race_categories": "",
+  "ignore_categories": "",
+  "ratio": 1.0,
+  "max_reannounce": 100,
+  "reannounce_frequency": 0.1
+}
