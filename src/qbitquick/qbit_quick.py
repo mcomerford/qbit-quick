@@ -2,28 +2,33 @@ import argparse
 import inspect
 import json
 import logging.config
+import math
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from contextlib import closing
 from importlib import resources
 
 import platformdirs
+from keyring.backends.Windows import missing_deps
 from qbittorrentapi import Client, TrackerStatus
 from qbittorrentapi.torrents import TorrentInfoList
 
-from qbitquick.logging_config import LOGGING_CONFIG
+from qbitquick.error_handler import setup_uncaught_exception_handler
+from qbitquick.log_config.fallback_logger import setup_fallback_logging
+from qbitquick.log_config.logging_loader import load_logging_config
 
 APP_NAME = 'qbit-quick'
 
 logger = logging.getLogger(__name__)
-
+setup_fallback_logging()
+setup_uncaught_exception_handler()
+load_logging_config()
 
 def main():
-    logging.config.dictConfig(LOGGING_CONFIG)
-
     parser = argparse.ArgumentParser(description='qBittorrent racing tools')
     subparsers = parser.add_subparsers(dest='subparser_name')
 
@@ -34,13 +39,20 @@ def main():
                                                                'such as resuming torrents that were previously paused')
     post_race_parser.add_argument('torrent_hash', help='hash of the torrent that has finished racing')
 
+    config_parser = subparsers.add_parser('config', help='print or edit the current config')
+    config_parser_group = config_parser.add_mutually_exclusive_group(required=True)
+    config_parser_group.add_argument('--print', action="store_true", help='print the current config')
+    config_parser_group.add_argument('--edit', action="store_true", help='edit the current config or create one if it does not exist')
+
     args = parser.parse_args(args=None if sys.argv[1:] else ['--help'])
 
     config_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'config.json')
     if not os.path.exists(config_path):
-        logger.info('config.json not found so creating default')
+        logger.info('config.json not found, so creating default')
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        shutil.copyfile('./default_config.json', config_path)
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        default_config_path = os.path.join(script_dir, 'default_config.json')
+        shutil.copyfile(default_config_path, config_path)
         logger.info('Created default config.json at: %s', config_path)
 
     with open(config_path) as f:
@@ -52,6 +64,11 @@ def main():
         race(config, args.torrent_hash)
     elif args.subparser_name == 'post_race':
         post_race(config, args.torrent_hash)
+    elif args.subparser_name == 'config':
+        if args.print:
+            print_config(config, config_path)
+        elif args.edit:
+            edit_config(config_path)
 
 
 def connect(config):
@@ -73,7 +90,7 @@ def race(config, torrent_hash):
 
     race_categories = config['race_categories'] if 'race_categories' in config else []
     if not race_categories:
-        logger.info('No racing categories are set, so all torrents are eligible for racing')
+        logger.info('No race categories are set, so all torrents are eligible for racing')
 
     ignore_categories = config['ignore_categories'] if 'ignore_categories' in config else []
     if ignore_categories:
@@ -90,13 +107,13 @@ def race(config, torrent_hash):
     logger.info('Reannounce frequency set to [%.2f] seconds', reannounce_frequency)
 
     pausing = config['pausing'] if 'pausing' in config else False
-    logger.info('Pausing of torrents before racing is [%s]', pausing)
+    logger.info('Pausing of torrents before racing is [%s]', "Enabled" if pausing else "disabled")
 
     torrents = client.torrents_info()
     race_torrent = next(filter(lambda x: x.hash == torrent_hash, torrents), None)
     if not race_torrent:
         logger.error('No torrent found with hash [%s]', torrent_hash)
-        return False
+        return
     torrents.remove(race_torrent)
 
     # Check the category on the race torrent
@@ -104,11 +121,11 @@ def race(config, torrent_hash):
         if not race_torrent.category:
             logger.info('Not racing torrent [%s], as no category is set. Valid race categories are: %s',
                         race_torrent.name, race_categories)
-            return False
+            return
         if race_torrent.category not in race_categories:
             logger.info('Not racing torrent [%s], as category [%s] is not in the list of racing categories %s',
                         race_torrent.name, race_torrent.category, race_categories)
-            return False
+            return
 
     # Remove any torrents with an ignored category
     if ignore_categories:
@@ -122,54 +139,66 @@ def race(config, torrent_hash):
     torrents_to_pause = []
     if pausing:
         logger.info('Pausing is enabled, so checking which torrents to pause')
+
+        ratio = config.get('ratio', 0)
+        logger.info('Minimum ratio to be eligible for pausing is set to [%d]', ratio)
+
         if race_categories:
             logger.info('Valid race categories are %s', race_categories)
-            for torrent in torrents:
-                if torrent.state_enum.is_paused:
-                    logger.debug('Skipping torrent [%s] as it is already paused', torrent.name)
-                    continue
-                if not torrent.category:
-                    logger.debug('Adding torrent [%s] to pause list, as no race category is set', torrent.name)
-                    torrents_to_pause.append(torrent)
-                elif torrent.category not in race_categories:
-                    logger.debug('Adding torrent [%s] to pause list, as category [%s] is not a valid race category',
-                                 torrent.name, torrent.category, race_categories)
-                    torrents_to_pause.append(torrent)
-                elif torrent.ratio >= config.ratio:
-                    logger.debug('Adding torrent [%s] to pause list as ratio [%f] >= [%f]',
-                                 torrent.name, torrent.ratio, config.ratio)
-                    torrents_to_pause.append(torrent)
+        else:
+            logger.info('No race categories are set, so all torrents are eligible for pausing')
 
-        if torrents_to_pause:
-            logger.info('Pausing %d torrents before racing', len(torrents_to_pause))
-            client.torrents_pause(torrent_hashes=[x.hash for x in torrents_to_pause])
+        for torrent in torrents:
+            if torrent.state_enum.is_paused:
+                logger.debug('Skipping torrent [%s] as it is already paused', torrent.name)
+                continue
+
+            if not race_categories or not torrent.category or torrent.category not in race_categories:
+                logger.info('Adding torrent [%s] to pause list, as category [%s] is not a valid race category',
+                            torrent.name, torrent.category)
+                torrents_to_pause.append(torrent)
+            elif torrent.ratio >= ratio:
+                logger.info('Adding torrent [%s] to pause list as ratio [%f] >= [%f]',
+                            torrent.name, torrent.ratio, ratio)
+                torrents_to_pause.append(torrent)
     else:
         logger.info('Pausing is disabled, so no torrents will be paused')
 
     # When a new torrent is added, the data will be checked first. Need to wait until this is done.
     # Can be improved if this is ever implemented: https://github.com/qbittorrent/qBittorrent/issues/9177
     while True:
-        race_torrent = client.torrents_info(torrent_hashes=torrent_hash)[0]
+        torrents = client.torrents_info(torrent_hashes=torrent_hash)
+        if not torrents:
+            logger.error('No torrent found with hash [%s]', torrent_hash)
+            return
+        race_torrent = torrents[0]
         if not race_torrent.state_enum.is_checking:
             break
         logger.debug('Waiting while torrent [%s] is checking...', race_torrent.name)
         time.sleep(0.1)
 
     if race_torrent.state_enum.is_paused:
-        logger.info('Not racing torrent [%s] as it is paused', race_torrent.name)
-        if pausing:
-            resume_torrents(client, torrents_to_pause)
+        logger.info('Not racing torrent [%s] as it is paused/stopped', race_torrent.name)
         return
+    elif race_torrent.state_enum.is_complete:
+        logger.info('Not racing torrent [%s] as it is already complete', race_torrent.name)
+        # return
+
+    paused_torrent_hashes = []
+    if torrents_to_pause:
+        logger.info('Pausing %d torrents before racing', len(torrents_to_pause))
+        paused_torrent_hashes = [x.hash for x in torrents_to_pause]
+        client.torrents_pause(torrent_hashes=paused_torrent_hashes)
 
     data_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'race.sqlite')
-    with closing(sqlite3.connect(data_path, autocommit=False)) as conn:
+    with closing(sqlite3.connect(data_path)) as conn:
         conn.row_factory = sqlite3.Row
         with closing(conn.cursor()) as cur:
             ddl_file = resources.files('qbitquick') / 'race.ddl'
             with ddl_file.open('r') as f:
                 cur.executescript(f.read())
             cur.execute('INSERT INTO race(racing_torrent_hash, paused_torrent_hashes, has_finished) VALUES (?, ?, 0)',
-                        (torrent_hash, json.dumps(torrents_to_pause),))
+                        (torrent_hash, json.dumps(paused_torrent_hashes),))
             conn.commit()
 
     # Continually reannounce until the torrent is available in the tracker
@@ -196,7 +225,11 @@ def race(config, torrent_hash):
 
 def resume_torrents(client, paused_torrent_hashes):
     logger.info('Resuming [%d] previously paused torrents', len(paused_torrent_hashes))
-    client.torrents_resume(torrent_hashes=paused_torrent_hashes)
+    found_paused_torrent_hashes = [x.hash for x in client.torrents_info(torrent_hashes=paused_torrent_hashes)]
+    missing_torrent_hashes = set(paused_torrent_hashes) - set(found_paused_torrent_hashes)
+    for missing_torrent_hash in missing_torrent_hashes:
+        logger.error('No torrent found with hash [%s], so it cannot be resumed', missing_torrent_hash)
+    client.torrents_resume(torrent_hashes=found_paused_torrent_hashes)
 
 
 def reannounce(client, torrent_hash):
@@ -212,20 +245,35 @@ def reannounce(client, torrent_hash):
 def post_race(config, torrent_hash):
     client = connect(config)
     data_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'race.sqlite')
-    with closing(sqlite3.connect(data_path, autocommit=False)) as conn:
+    with closing(sqlite3.connect(data_path)) as conn:
         conn.row_factory = sqlite3.Row
         with closing(conn.cursor()) as cur:
             cur.execute('UPDATE race SET has_finished = 1 WHERE racing_torrent_hash = ?', (torrent_hash,))
             rows = cur.execute('SELECT * FROM race ORDER BY id DESC').fetchall()
             for row in rows:
                 if row['has_finished']:
-                    resume_torrents(client, row['paused_torrent_hashes'])
-                    cur.execute('DELETE FROM race WHERE id = ?', (row['id']))
+                    resume_torrents(client, json.loads(row['paused_torrent_hashes']))
+                    cur.execute('DELETE FROM race WHERE id = ?', (row['id'],))
                 else:
                     break
             conn.commit()
 
-    logger.info('Post race complete for torrent: %s', torrent_hash.name)
+    logger.info('Post race complete for torrent: %s', client.torrents_info(torrent_hashes=torrent_hash)[0].name)
+
+
+def print_config(config, config_path):
+    print("Config Path: " + config_path)
+    print(json.dumps(config, indent=2))
+
+
+def edit_config(config_path):
+    editor = os.environ.get("EDITOR", "vi")
+    if sys.platform.startswith("win") and not os.environ.get("EDITOR"):
+        editor = "notepad"
+    try:
+        subprocess.run([editor, config_path])
+    except Exception as e:
+        logger.error("Error: Could not open file: %s", config_path, e)
 
 
 if __name__ == '__main__':

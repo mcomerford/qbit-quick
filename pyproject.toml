@@ -1,30 +1,24 @@
-[build-system]
-requires = ["setuptools >= 61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "qbit-quick"
 version = "1.0.0"
-authors = [
-    { name = "TwistedSystem", email = "twistedsystem8@gmail.com" },
-]
 description = "qBittorrent racing tools"
+authors = ["TwistedSystem <twistedsystem8@gmail.com>"]
+license = "GPL-3.0-or-later"
 readme = "README.md"
-requires-python = ">=3.8"
 keywords = ["qBittorrent", "racing"]
-license = { text = "GPL-3.0-or-later" }
-classifiers = [
-    "Programming Language :: Python"
-]
-dependencies = [
-    "platformdirs",
-    "qbittorrent-api"
-]
+packages = [{ include = "qbitquick", from = "src" }]
 
-[project.optional-dependencies]
-dev = [
-    "tox"
-]
+[tool.poetry.dependencies]
+python = ">=3.10"
+platformdirs = "*"
+qbittorrent-api = "*"
 
-[project.scripts]
+[tool.poetry.group.dev.dependencies]
+tox = "*"
+
+[tool.poetry.scripts]
 qbit-quick = "qbitquick.qbit_quick:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
