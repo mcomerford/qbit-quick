@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS race
 (
-    id                    INTEGER PRIMARY KEY,
-    racing_torrent_hash   VARCHAR(32) NOT NULL,
-    paused_torrent_hashes TEXT        NULL,
-    has_finished          INTEGER     NOT NULL
+    racing_torrent_hash   TEXT PRIMARY KEY,
+    paused_torrent_hashes TEXT,
+    has_finished          INTEGER NOT NULL CHECK (has_finished IN (0, 1))
 )
