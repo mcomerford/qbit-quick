@@ -1,27 +1,24 @@
 import argparse
-import inspect
 import json
 import logging.config
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import closing
 from importlib import resources
 
 import platformdirs
 from qbittorrentapi import Client, TrackerStatus
 from qbittorrentapi.torrents import TorrentInfoList
-from tabulate import tabulate
 
+from qbitquick.config import APP_NAME, TOO_MANY_REQUESTS_DELAY
+from qbitquick.database.database_handler import save_torrent_hashes_to_pause, load_torrents_to_unpause, print_db, \
+    clear_db, \
+    delete_torrent, load_all_paused_torrent_hashes
 from qbitquick.error_handler import setup_uncaught_exception_handler
 from qbitquick.log_config.fallback_logger import setup_fallback_logging
 from qbitquick.log_config.logging_loader import load_logging_config
-
-APP_NAME = 'qbit-quick'
-TOO_MANY_REQUESTS_DELAY = 10
 
 logger = logging.getLogger(__name__)
 setup_fallback_logging()
@@ -51,53 +48,57 @@ def main():
     db_parser.add_argument('--clear', action='store_true', help='clear the database')
 
     args = parser.parse_args(args=None if sys.argv[1:] else ['--help'])
-    logger.info("%s called with arguments: %s", APP_NAME, args)
+    logger.info('%s called with arguments: %s', APP_NAME, args)
 
     config_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'config.json')
     if not os.path.exists(config_path):
         logger.info('config.json not found, so creating default')
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        default_config_path = os.path.join(script_dir, 'default_config.json')
-        shutil.copyfile(default_config_path, config_path)
+        default_config = resources.files('qbitquick') / 'resources' / 'default_config.json'
+
+        with default_config.open('rb') as src, open(config_path, 'wb') as dst:
+            dst.write(src.read())
+
         logger.info('Created default config.json at: %s', config_path)
 
-    with open(config_path) as f:
+    with open(config_path, 'r') as f:
         logger.info('Loading config.json from: %s', config_path)
         config = json.loads(f.read())
         logger.debug('Loaded config: %s', config)
 
     if args.subparser_name == 'race':
-        race(config, args.torrent_hash)
+        return race(config, args.torrent_hash)
     elif args.subparser_name == 'post_race':
-        post_race(config, args.torrent_hash)
+        return post_race(config, args.torrent_hash)
     elif args.subparser_name == 'config':
         if args.print:
-            print_config(config, config_path)
+            return print_config(config, config_path)
         elif args.edit:
-            edit_config(config_path)
+            return edit_config(config_path)
     elif args.subparser_name == 'db':
         if args.print:
-            print_db()
+            return print_db()
         elif args.clear:
-            clear_db()
+            return clear_db()
 
 
 def connect(config):
     # Filter config to just the qBittorrent connection info
-    conn_info = {k: v for k, v in config.items() if k in [p.name for p in inspect.signature(Client).parameters.values()]}
-    qbt_client = Client(**conn_info)
+    client_params = {'host', 'port', 'username', 'password'}
+    conn_info = {k: v for k, v in config.items() if k in client_params}
+    client = Client(**conn_info)
     logger.info('Connected to qBittorrent successfully')
 
-    logger.info('qBittorrent: %s', qbt_client.app.version)
-    logger.info('qBittorrent Web API: %s', qbt_client.app.webapiVersion)
-    for k, v in qbt_client.app.build_info.items():
-        logger.info('%s: %s', k, v)
+    logger.info('qBittorrent: %s', client.app.version)
+    logger.info('qBittorrent Web API: %s', client.app.webapiVersion)
+    if logger.isEnabledFor(logging.DEBUG):
+        for k, v in client.app.build_info.items():
+            logger.info('%s: %s', k, v)
 
-    return qbt_client
+    return client
 
 
-def race(config, torrent_hash):
+def race(config, racing_torrent_hash):
     client = connect(config)
 
     race_categories = config['race_categories'] if 'race_categories' in config else []
@@ -122,33 +123,33 @@ def race(config, torrent_hash):
     logger.info('Pausing of torrents before racing is [%s]', 'Enabled' if pausing else 'Disabled')
 
     torrents = client.torrents_info()
-    race_torrent = next(filter(lambda x: x.hash == torrent_hash, torrents), None)
-    if not race_torrent:
-        logger.error('No torrent found with hash [%s]', torrent_hash)
-        return
-    torrents.remove(race_torrent)
+    racing_torrent = next((t for t in torrents if t.hash == racing_torrent_hash), None)
+    if not racing_torrent:
+        logger.error('No torrent found with hash [%s]', racing_torrent_hash)
+        return 1
+    torrents.remove(racing_torrent)
 
     # Check the category on the race torrent
     if race_categories:
-        if not race_torrent.category:
+        if not racing_torrent.category:
             logger.info('Not racing torrent [%s], as no category is set. Valid race categories are: %s',
-                        race_torrent.name, race_categories)
-            return
-        if race_torrent.category not in race_categories:
+                        racing_torrent.name, race_categories)
+            return 1
+        if racing_torrent.category not in race_categories:
             logger.info('Not racing torrent [%s], as category [%s] is not in the list of racing categories %s',
-                        race_torrent.name, race_torrent.category, race_categories)
-            return
+                        racing_torrent.name, racing_torrent.category, race_categories)
+            return 1
 
     # Remove any torrents with an ignored category
     if ignore_categories:
-        ignored_torrents = TorrentInfoList(filter(lambda x: x.category in ignore_categories, torrents))
+        ignored_torrents = TorrentInfoList([t for t in torrents if t.category in ignore_categories])
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug('Ignored torrents: %s', [x.name for x in ignored_torrents])
+            logger.debug('Ignored torrents: %s', [t.name for t in ignored_torrents])
         logger.info('Ignoring %d torrents, as their category is one of %s', len(ignored_torrents),
                     ignore_categories)
-        torrents = TorrentInfoList(filter(lambda x: x not in ignored_torrents, torrents))
+        torrents = TorrentInfoList([t for t in torrents if t not in ignored_torrents])
 
-    torrent_hashes_to_pause = []
+    torrent_hashes_to_pause = set()
     if pausing:
         logger.info('Pausing is enabled, so checking which torrents to pause')
 
@@ -161,135 +162,132 @@ def race(config, torrent_hash):
             logger.info('No race categories are set, so all torrents are eligible for pausing')
 
         for torrent in torrents:
-            if torrent.state_enum.is_paused:
-                logger.debug('Skipping torrent [%s] as it is already paused', torrent.name)
+            if torrent.state_enum.is_paused and torrent.hash not in load_all_paused_torrent_hashes():
+                logger.info('Ignoring torrent [%s] as it is already paused', torrent.name)
                 continue
-
             if not race_categories or not torrent.category or torrent.category not in race_categories:
                 logger.info('Adding torrent [%s] to pause list, as category [%s] is not a valid race category',
                             torrent.name, torrent.category)
-                torrent_hashes_to_pause.append(torrent.hash)
+                torrent_hashes_to_pause.add(torrent.hash)
             elif torrent.ratio >= ratio:
                 logger.info('Adding torrent [%s] to pause list as ratio [%f] >= [%f]',
                             torrent.name, torrent.ratio, ratio)
-                torrent_hashes_to_pause.append(torrent.hash)
+                torrent_hashes_to_pause.add(torrent.hash)
     else:
         logger.info('Pausing is disabled, so no torrents will be paused')
 
     # When a new torrent is added, the data will be checked first. Need to wait until this is done.
     # Can be improved if this is ever implemented: https://github.com/qbittorrent/qBittorrent/issues/9177
     while True:
-        race_torrent = next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
-        if not race_torrent:
-            logger.error('No torrent found with hash [%s]', torrent_hash)
-            return
-        if not race_torrent.state_enum.is_checking:
+        racing_torrent = get_torrent(client, racing_torrent_hash)
+        if not racing_torrent:
+            logger.error('No torrent found with hash [%s]', racing_torrent_hash)
+            return 1
+        if not racing_torrent.state_enum.is_checking:
             break
-        logger.debug('Waiting while torrent [%s] is checking...', race_torrent.name)
+        logger.debug('Waiting while torrent [%s] is checking...', racing_torrent.name)
         time.sleep(0.1)
 
-    if race_torrent.state_enum.is_paused:
-        logger.info('Not racing torrent [%s] as it is paused/stopped', race_torrent.name)
-        return
-    elif race_torrent.state_enum.is_complete:
-        logger.info('Not racing torrent [%s] as it is already complete', race_torrent.name)
-        # return
+    if racing_torrent.state_enum.is_paused:
+        logger.info('Not racing torrent [%s] as it is paused/stopped', racing_torrent.name)
+        return 1
+    elif racing_torrent.state_enum.is_complete:
+        logger.info('Not racing torrent [%s] as it is already complete', racing_torrent.name)
+        return 1
+
+    try:
+        save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause)
+    except sqlite3.DatabaseError as e:
+        logger.error('Exception while saving paused torrent for torrent [%s]', racing_torrent.name, e)
+        return 1
 
     if torrent_hashes_to_pause:
         logger.info('Pausing [%d] torrents before racing', len(torrent_hashes_to_pause))
         client.torrents_pause(torrent_hashes=torrent_hashes_to_pause)
 
-    db_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'race.sqlite')
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        with closing(conn.cursor()) as cur:
-            ddl_file = resources.files('qbitquick') / 'race.ddl'
-            with ddl_file.open('r') as f:
-                cur.executescript(f.read())
-            cur.execute(
-                '''
-                INSERT INTO race (racing_torrent_hash, paused_torrent_hashes, has_finished)
-                VALUES (?, ?, ?)
-                ON CONFLICT(racing_torrent_hash) 
-                DO UPDATE SET 
-                    paused_torrent_hashes = excluded.paused_torrent_hashes,
-                    has_finished = excluded.has_finished;
-                ''',
-                (torrent_hash, json.dumps(torrent_hashes_to_pause), 0),
-            )
-            conn.commit()
-
     # Continually reannounce until the torrent is available in the tracker
-    if not reannounce_until_working(client, max_reannounce, reannounce_frequency, torrent_hash):
+    if not reannounce_until_working(client, max_reannounce, reannounce_frequency, racing_torrent_hash):
         resume_torrents(client, torrent_hashes_to_pause)
-        return
+        return 1
 
-    logger.info('Racing complete for torrent [%s]', race_torrent.name)
+    logger.info('Racing complete for torrent [%s]', racing_torrent.name)
+    return 0
 
 
 def reannounce_until_working(client, max_reannounce, reannounce_frequency, torrent_hash):
     reannounce_count = 1
     while not max_reannounce or reannounce_count < max_reannounce:
-        race_torrent = next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
-        if not race_torrent:
+        torrent = get_torrent(client, torrent_hash)
+        if not torrent:
             logger.error('Aborting race, as torrent with hash [%s] no longer exists', torrent_hash)
             return False
-        if race_torrent.state_enum.is_stopped:
-            logger.error('Aborting race, as torrent [%s] has been stopped', race_torrent.name)
+        if torrent.state_enum.is_stopped:
+            logger.error('Aborting race, as torrent [%s] has been stopped', torrent.name)
             return False
-        if any(tracker.status == TrackerStatus.UPDATING for tracker in client.torrents_trackers(torrent_hash=torrent_hash)):
-            logger.debug("Waiting on torrent [%s] while trackers are updating...", race_torrent.name)
+
+        has_updating = False
+        trackers = client.torrents_trackers(torrent_hash=torrent_hash)
+        for status in (tracker.status for tracker in trackers):
+            if status == TrackerStatus.WORKING:
+                logger.info('Torrent [%s] has at least 1 working tracker', torrent.name)
+                return True
+            elif status == TrackerStatus.UPDATING:
+                has_updating = True
+
+        if has_updating:
+            logger.debug('Waiting on torrent [%s] while trackers are updating...', torrent.name)
             time.sleep(reannounce_frequency)
             continue
-        if handle_unregistered_torrent(client, race_torrent) or handle_too_many_requests(client, race_torrent):
+        if handle_unregistered_torrent(client, torrent) or handle_too_many_requests(client, torrent):
             continue
-        if reannounce(client, race_torrent):
-            logger.info('Torrent [%s] now has at least 1 working tracker', race_torrent.name)
+        if reannounce(client, torrent):
+            logger.info('Torrent [%s] has at least 1 working tracker', torrent.name)
             return True
         logger.info('Sent reannounce [%s] of [%s] for torrent [%s]',
-                    reannounce_count, max_reannounce if max_reannounce else 'Unlimited', race_torrent.name)
+                    reannounce_count, max_reannounce if max_reannounce else 'Unlimited', torrent.name)
         time.sleep(reannounce_frequency)
         reannounce_count += 1
 
-    race_torrent = next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
-    if race_torrent:
-        logger.info('Giving up, as there are still no working trackers for torrent [%s]', race_torrent.name)
+    torrent = get_torrent(client, torrent_hash)
+    if torrent:
+        logger.info('Giving up, as there are still no working trackers for torrent [%s]', torrent.name)
     else:
         logger.info('Giving up, as there are still no working trackers for torrent with hash [%s]', torrent_hash)
     return False
 
 
-def handle_unregistered_torrent(client, race_torrent):
+def handle_unregistered_torrent(client, torrent):
     """
     When a new torrent is added, the tracker may state that the torrent is unregistered. In this case,
     reannouncing won't help and the torrent has to be stopped and restarted. Forcing a recheck is an
     easy way to do this.
     """
-    torrent_hash = race_torrent.hash
-    not_working_trackers = [x for x in client.torrents_trackers(torrent_hash=torrent_hash) if x.status == TrackerStatus.NOT_WORKING]
+    not_working_trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash)
+                            if tracker.status == TrackerStatus.NOT_WORKING]
     for not_working_tracker in not_working_trackers:
         if 'unregistered' in not_working_tracker.msg.lower():
-            if race_torrent.progress == 0:
+            if torrent.progress == 0:
                 logger.info('Torrent [%s] has been marked as unregistered in tracker [%s], so forcing a recheck',
-                            race_torrent.name, not_working_tracker.url)
-                client.torrents_recheck(torrent_hashes=torrent_hash)
+                            torrent.name, not_working_tracker.url)
+                client.torrents_recheck(torrent_hashes=torrent.hash)
             else:
                 logger.info('Torrent [%s] has been marked as unregistered in tracker [%s], so forcing a restart',
-                            race_torrent.name, not_working_tracker.url)
-                client.torrents_stop(torrent_hashes=torrent_hash)
-                client.torrents_start(torrent_hashes=torrent_hash)
-            time.sleep(1)
+                            torrent.name, not_working_tracker.url)
+                client.torrents_stop(torrent_hashes=torrent.hash)
+                client.torrents_start(torrent_hashes=torrent.hash)
             return True
     return False
 
 
-def handle_too_many_requests(client, race_torrent):
+def handle_too_many_requests(client, torrent):
     """
     If too many requests are sent in a short space of time, the tracker will block any further requests.
-    It's not clear what the limit it is, but this adds a delay to try and give the tracker a chance to recover.
+    It's not clear what the limit it is, but this adds a fixed delay to try and give the tracker a chance to recover.
     """
-    torrent_hash = race_torrent.hash
-    not_working_trackers = [x for x in client.torrents_trackers(torrent_hash=torrent_hash) if x.status in [TrackerStatus.NOT_WORKING, TrackerStatus.UPDATING]]
+    not_working_trackers = (
+        t for t in client.torrents_trackers(torrent_hash=torrent.hash)
+        if t.status in {TrackerStatus.NOT_WORKING, TrackerStatus.UPDATING}
+    )
     for not_working_tracker in not_working_trackers:
         if 'too many requests' in not_working_tracker.msg.lower():
             logger.info('Tracker [%s] has reported [Too Many Requests], so adding a delay of [%ds] before trying again',
@@ -299,28 +297,14 @@ def handle_too_many_requests(client, race_torrent):
     return False
 
 
-def abort_if_stopped(client, torrent_hash):
-    race_torrent = next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
-    return not race_torrent or race_torrent.state_enum.is_stopped
-
-
-def resume_torrents(client, paused_torrent_hashes):
-    logger.info('Resuming [%d] previously paused torrents', len(paused_torrent_hashes))
-    found_paused_torrent_hashes = [x.hash for x in client.torrents_info(torrent_hashes=paused_torrent_hashes)]
-    missing_torrent_hashes = set(paused_torrent_hashes) - set(found_paused_torrent_hashes)
-    for missing_torrent_hash in missing_torrent_hashes:
-        logger.error('No torrent found with hash [%s], so it cannot be resumed', missing_torrent_hash)
-    client.torrents_resume(torrent_hashes=found_paused_torrent_hashes)
-
-
-def reannounce(client, race_torrent):
-    torrent_hash = race_torrent.hash
-    if any(tracker.status == TrackerStatus.WORKING for tracker in client.torrents_trackers(torrent_hash=torrent_hash)):
+def reannounce(client, torrent):
+    if any(tracker.status == TrackerStatus.WORKING for tracker in client.torrents_trackers(torrent_hash=torrent.hash)):
         logger.info('Skipping reannounce for torrent [%s], as at least one tracker is already working',
-                    race_torrent.name)
+                    torrent.name)
         return True
-    client.torrents_reannounce(torrent_hashes=torrent_hash)
-    trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent_hash) if tracker.status != TrackerStatus.DISABLED]
+    client.torrents_reannounce(torrent_hashes=torrent.hash)
+    trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash) if
+                tracker.status != TrackerStatus.DISABLED]
     if logger.isEnabledFor(logging.DEBUG):
         for tracker in trackers:
             if tracker.msg:
@@ -333,32 +317,38 @@ def reannounce(client, race_torrent):
     return any(tracker.status == TrackerStatus.WORKING for tracker in trackers)
 
 
+def resume_torrents(client, paused_torrent_hashes):
+    if paused_torrent_hashes:
+        logger.info('Resuming [%d] previously paused torrents', len(paused_torrent_hashes))
+        found_paused_torrent_hashes = {t.hash for t in (client.torrents_info(torrent_hashes=paused_torrent_hashes) or [])}
+        missing_torrent_hashes = set(paused_torrent_hashes) - found_paused_torrent_hashes
+        for missing_torrent_hash in missing_torrent_hashes:
+            logger.warning('No torrent found with hash [%s], so it cannot be resumed', missing_torrent_hash)
+        client.torrents_resume(torrent_hashes=found_paused_torrent_hashes)
+    else:
+        logger.info('No paused torrents to resume')
+
+
 def post_race(config, torrent_hash):
     client = connect(config)
-    db_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'race.sqlite')
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        with closing(conn.cursor()) as cur:
-            cur.execute('UPDATE race SET has_finished = 1 WHERE racing_torrent_hash = ?', (torrent_hash,))
-            rows = cur.execute('SELECT * FROM race ORDER BY id DESC').fetchall()
-            for row in rows:
-                if row['has_finished']:
-                    resume_torrents(client, json.loads(row['paused_torrent_hashes']))
-                    cur.execute('DELETE FROM race WHERE id = ?', (row['id'],))
-                else:
-                    break
-            conn.commit()
+    torrent = get_torrent(client, torrent_hash)
+    if not torrent:
+        logger.error('No torrent found with hash [%s], so no post race actions can be run', torrent_hash)
+        return 1
 
-    race_torrent = next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
-    if race_torrent:
-        logger.info('Post race complete for torrent [%s]', race_torrent.name)
-    else:
-        logger.info('Post race complete for torrent with hash [%s]', torrent_hash)
+    torrents_to_unpause = load_torrents_to_unpause(torrent_hash)
+    resume_torrents(client, torrents_to_unpause)
+    if delete_torrent(torrent_hash) > 0:
+        logger.info('Deleted torrent [%s]', torrent.name)
+
+    logger.info('Post race complete for torrent [%s]', torrent.name)
+    return 0
 
 
 def print_config(config, config_path):
     print('Config Path: ' + config_path)
     print(json.dumps(config, indent=2))
+    return 0
 
 
 def edit_config(config_path):
@@ -369,28 +359,12 @@ def edit_config(config_path):
         subprocess.run([editor, config_path])
     except Exception as e:
         logger.error('Error: Could not open file: %s', config_path, e)
+    return 0
 
 
-def print_db():
-    db_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'race.sqlite')
-    logger.info("Database path: %s", db_path)
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute('SELECT * FROM race')
-        rows = cur.fetchall()
-        headers = [desc[0] for desc in cur.description]  # Get column names
+def get_torrent(client, torrent_hash):
+    return next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
 
-        print(tabulate(rows, headers=headers, tablefmt="grid"))
-
-
-def clear_db():
-    db_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), 'race.sqlite')
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        # noinspection SqlWithoutWhere
-        cur.execute('DELETE FROM race')
-        conn.commit()
-        logger.info('Database cleared of all rows')
 
 if __name__ == '__main__':
     main()

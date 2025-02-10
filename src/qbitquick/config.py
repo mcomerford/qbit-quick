@@ -1,0 +1,3 @@
+APP_NAME = 'qbit-quick'
+DATABASE_FILENAME = 'race.sqlite'
+TOO_MANY_REQUESTS_DELAY = 10
