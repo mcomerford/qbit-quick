@@ -13,7 +13,7 @@ from qbittorrentapi import TorrentInfoList, TorrentState, TrackerStatus, Tracker
 import qbitquick.database.database_handler
 import qbitquick.qbit_quick
 from qbitquick.config import TOO_MANY_REQUESTS_DELAY
-from test_helpers import assert_called_once_with_in_any_order
+from test_helpers import assert_called_once_with_in_any_order, merge_and_remove
 
 
 def test_default_config_is_not_created_when_no_args_are_passed_in(monkeypatch):
@@ -83,7 +83,7 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
                          mock_get_db_connection, mocker, monkeypatch):
     # Setup torrents
     racing_torrent = torrent_factory(
-        category='race', name='racing_torrent'
+        category='race', name='racing_torrent', state=TorrentState.CHECKING_DOWNLOAD
     )
     downloading_torrent = torrent_factory(
         category='race', state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5, name='downloading_torrent'
@@ -126,17 +126,26 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
     # Update the trackers after each loop by hooking into the sleep function
     def sleep_callback(_seconds):
         racing_torrent.state = TorrentState.DOWNLOADING
-        working_tracker.update(next(tracker_statuses))
+        update_tracker(working_tracker)
 
     mocker.patch.object(qbitquick.qbit_quick, 'time', wraps=time)
     mock_sleep = mocker.patch('qbitquick.qbit_quick.time.sleep', side_effect=sleep_callback)
 
+    # Various callbacks can update the tracker status, so this list needs to match exactly how many callback there are
     tracker_statuses = iter([
+        # Sleep called while torrent is checking, so don't change the status
+        {},
+        # Reannounce changes the status to updating
         {'status': TrackerStatus.UPDATING},
+        # Sleeping after reannounce changes the status to not working
         {'status': TrackerStatus.NOT_WORKING, 'msg': 'unregistered'},
-        {'status': TrackerStatus.UPDATING},
+        # Recheck due to unregistered changes the status to updating and clears the message
+        {'status': TrackerStatus.UPDATING, 'msg': None},
+        # Sleeping while updating changes the status to not working
         {'status': TrackerStatus.NOT_WORKING, 'msg': 'too many requests'},
-        {'status': TrackerStatus.UPDATING},
+        # Sleeping due to too many requests changes the status to updating and clears the message
+        {'status': TrackerStatus.UPDATING, 'msg': None},
+        # Sleeping while updating changes the status to working
         {'status': TrackerStatus.WORKING},
     ])
 
@@ -150,8 +159,8 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
         if kwargs.get('torrent_hash') == racing_torrent.hash:
             return TrackersList(trackers)
 
-    def update_trackers():
-        working_tracker.update(next(tracker_statuses))
+    def update_tracker(tracker):
+        merge_and_remove(tracker, next(tracker_statuses))
 
     def torrents_pause_side_effect(**kwargs):
         hash_to_torrent = {torrent.hash: torrent for torrent in torrents}
@@ -161,8 +170,8 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
 
     mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
     mock_client_instance.torrents_trackers.side_effect = torrents_trackers_side_effect
-    mock_client_instance.torrents_reannounce.side_effect = lambda **kwargs: update_trackers()
-    mock_client_instance.torrents_recheck.side_effect = lambda **kwargs: update_trackers()
+    mock_client_instance.torrents_reannounce.side_effect = lambda **kwargs: update_tracker(working_tracker)
+    mock_client_instance.torrents_recheck.side_effect = lambda **kwargs: update_tracker(working_tracker)
     mock_client_instance.torrents_pause.side_effect = torrents_pause_side_effect
 
     # Call the main function with the race command
@@ -199,7 +208,7 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
     mock_sleep.assert_any_call(TOO_MANY_REQUESTS_DELAY)
 
 
-def test_post_race(mock_client_instance, sample_config, torrent_factory, mock_get_db_connection):
+def test_post_race(mock_client_instance, torrent_factory, mock_get_db_connection, mocker, monkeypatch):
     racing_torrent = torrent_factory(
         category='race', name='racing_torrent'
     )
@@ -216,7 +225,9 @@ def test_post_race(mock_client_instance, sample_config, torrent_factory, mock_ge
 
     mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
 
-    exit_code = qbitquick.qbit_quick.post_race(sample_config, racing_torrent.hash)
+    # Call the main function with the post_race command
+    command = 'post_race'
+    exit_code = qbit_quick_main(command, racing_torrent, mocker, monkeypatch)
 
     # Verify the script exited with a successful exit code
     assert exit_code == 0
@@ -228,6 +239,13 @@ def test_post_race(mock_client_instance, sample_config, torrent_factory, mock_ge
     # Verify the associated paused torrent hashes was removed from the database
     cur.execute('SELECT * FROM paused_torrents')
     assert cur.fetchall() == []
+
+
+def qbit_quick_main(command, racing_torrent, mocker, monkeypatch):
+    mocker.patch('qbitquick.qbit_quick.os.path.exists', return_value=True)
+    monkeypatch.setattr('sys.argv', ['main', command, racing_torrent.hash])
+    exit_code = qbitquick.qbit_quick.main()
+    return exit_code
 
 
 def test_post_race_with_no_torrents_to_resume(mock_client_instance, sample_config, torrent_factory, mock_get_db_connection):

@@ -8,6 +8,8 @@ from unittest.mock import mock_open
 import pytest
 from qbittorrentapi import TrackerStatus, TorrentState, Tracker, TorrentDictionary
 
+from test_helpers import merge_and_remove
+
 
 @pytest.fixture
 def sample_config():
@@ -24,8 +26,16 @@ def sample_config():
 
 
 @pytest.fixture
-def mock_config(monkeypatch, sample_config):
-    mock_file_content = json.dumps(sample_config)
+def override_config(sample_config, request):
+    """Fixture that merges sample_config with test-specific updates."""
+    config_updates = getattr(request, "param", {})  # Get param from parametrize
+    merge_and_remove(sample_config, config_updates)
+    return sample_config
+
+
+@pytest.fixture
+def mock_config(monkeypatch, override_config):
+    mock_file_content = json.dumps(override_config)
     mocked_open = mock_open(read_data=mock_file_content)
     monkeypatch.setattr("builtins.open", mocked_open)
 

@@ -25,6 +25,8 @@ setup_fallback_logging()
 setup_uncaught_exception_handler()
 load_logging_config()
 
+unregistered_messages = ['unregistered', 'stream truncated']
+
 
 def main():
     parser = argparse.ArgumentParser(description='qBittorrent racing tools')
@@ -75,11 +77,14 @@ def main():
             return print_config(config, config_path)
         elif args.edit:
             return edit_config(config_path)
+        return None
     elif args.subparser_name == 'db':
         if args.print:
             return print_db()
         elif args.clear:
             return clear_db()
+        return None
+    return None
 
 
 def connect(config):
@@ -116,7 +121,7 @@ def race(config, racing_torrent_hash):
         max_reannounce = None
         logger.info('Maximum number of reannounce requests is set to [Unlimited]')
 
-    reannounce_frequency = config['reannounce_frequency'] if 'reannounce_frequency' in config else 0.5
+    reannounce_frequency = config['reannounce_frequency'] if 'reannounce_frequency' in config else 5.0
     logger.info('Reannounce frequency set to [%.2f] seconds', reannounce_frequency)
 
     pausing = config['pausing'] if 'pausing' in config else False
@@ -215,7 +220,7 @@ def race(config, racing_torrent_hash):
 
 
 def reannounce_until_working(client, max_reannounce, reannounce_frequency, torrent_hash):
-    reannounce_count = 1
+    reannounce_count = 0
     while not max_reannounce or reannounce_count < max_reannounce:
         torrent = get_torrent(client, torrent_hash)
         if not torrent:
@@ -243,10 +248,10 @@ def reannounce_until_working(client, max_reannounce, reannounce_frequency, torre
         if reannounce(client, torrent):
             logger.info('Torrent [%s] has at least 1 working tracker', torrent.name)
             return True
+        reannounce_count += 1
         logger.info('Sent reannounce [%s] of [%s] for torrent [%s]',
                     reannounce_count, max_reannounce if max_reannounce else 'Unlimited', torrent.name)
         time.sleep(reannounce_frequency)
-        reannounce_count += 1
 
     torrent = get_torrent(client, torrent_hash)
     if torrent:
@@ -265,14 +270,15 @@ def handle_unregistered_torrent(client, torrent):
     not_working_trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash)
                             if tracker.status == TrackerStatus.NOT_WORKING]
     for not_working_tracker in not_working_trackers:
-        if 'unregistered' in not_working_tracker.msg.lower():
+        tracker_msg = not_working_tracker.msg.lower()
+        if any(msg in tracker_msg for msg in unregistered_messages):
             if torrent.progress == 0:
-                logger.info('Torrent [%s] has been marked as unregistered in tracker [%s], so forcing a recheck',
-                            torrent.name, not_working_tracker.url)
+                logger.info('Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a recheck',
+                            torrent.name, not_working_tracker.msg, not_working_tracker.url)
                 client.torrents_recheck(torrent_hashes=torrent.hash)
             else:
-                logger.info('Torrent [%s] has been marked as unregistered in tracker [%s], so forcing a restart',
-                            torrent.name, not_working_tracker.url)
+                logger.info('Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a restart',
+                            torrent.name, not_working_tracker.msg, not_working_tracker.url)
                 client.torrents_stop(torrent_hashes=torrent.hash)
                 client.torrents_start(torrent_hashes=torrent.hash)
             return True
