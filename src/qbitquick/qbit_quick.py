@@ -8,22 +8,23 @@ import sys
 import time
 from importlib import resources
 
+import jsonschema
 import platformdirs
+from jsonschema import ValidationError, FormatChecker
 from qbittorrentapi import Client, TrackerStatus
 from qbittorrentapi.torrents import TorrentInfoList
 
 from qbitquick.config import APP_NAME, TOO_MANY_REQUESTS_DELAY
-from qbitquick.database.database_handler import save_torrent_hashes_to_pause, load_torrents_to_unpause, print_db, \
-    clear_db, \
-    delete_torrent, load_all_paused_torrent_hashes
+from qbitquick.database.database_handler import load_all_paused_torrent_hashes, delete_torrent, \
+    save_torrent_hashes_to_pause, load_torrents_to_unpause, clear_db, print_db
 from qbitquick.error_handler import setup_uncaught_exception_handler
 from qbitquick.log_config.fallback_logger import setup_fallback_logging
-from qbitquick.log_config.logging_loader import load_logging_config
+from qbitquick.log_config.logging_config import LOGGING_CONFIG
 
 logger = logging.getLogger(__name__)
 setup_fallback_logging()
 setup_uncaught_exception_handler()
-load_logging_config()
+logging.config.dictConfig(LOGGING_CONFIG)
 
 unregistered_messages = ['unregistered', 'stream truncated']
 
@@ -56,17 +57,34 @@ def main():
     if not os.path.exists(config_path):
         logger.info('config.json not found, so creating default')
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        default_config = resources.files('qbitquick') / 'resources' / 'default_config.json'
-
-        with default_config.open('rb') as src, open(config_path, 'wb') as dst:
+        default_config_path = resources.files('qbitquick') / 'resources' / 'default_config.json'
+        with default_config_path.open('rb') as src, open(config_path, 'wb') as dst:
             dst.write(src.read())
 
         logger.info('Created default config.json at: %s', config_path)
 
     with open(config_path, 'r') as f:
         logger.info('Loading config.json from: %s', config_path)
-        config = json.loads(f.read())
+        try:
+            config = json.loads(f.read())
+        except json.decoder.JSONDecodeError as e:
+            logger.error("Failed to load config.json: %s", e)
+            return 1
         logger.debug('Loaded config: %s', config)
+
+    config_schema_path = resources.files('qbitquick') / 'resources' / 'config_schema.json'
+    with config_schema_path.open('r') as f:
+        config_schema = json.loads(f.read())
+
+    try:
+        jsonschema.validate(instance=config, schema=config_schema, format_checker=FormatChecker())
+    except ValidationError as e:
+        logger.error('Invalid config: %s', e.message)
+        return 1
+
+    debug_logging = config['debug_logging'] if 'debug_logging' in config else False
+    update_log_level(debug_logging)
+    logger.info('DEBUG level logging %s', 'enabled' if debug_logging else 'disabled')
 
     if args.subparser_name == 'race':
         return race(config, args.torrent_hash)
@@ -92,6 +110,7 @@ def connect(config):
     client_params = {'host', 'port', 'username', 'password'}
     conn_info = {k: v for k, v in config.items() if k in client_params}
     client = Client(**conn_info)
+    client.auth_log_in() # This just checks that the connection and login is successful
     logger.info('Connected to qBittorrent successfully')
 
     logger.info('qBittorrent: %s', client.app.version)
@@ -104,7 +123,12 @@ def connect(config):
 
 
 def race(config, racing_torrent_hash):
-    client = connect(config)
+    # noinspection PyBroadException
+    try:
+        client = connect(config)
+    except Exception:
+        logger.exception('Failed to connect to qBittorrent')
+        return 1
 
     race_categories = config['race_categories'] if 'race_categories' in config else []
     if not race_categories:
@@ -202,8 +226,8 @@ def race(config, racing_torrent_hash):
 
     try:
         save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause)
-    except sqlite3.DatabaseError as e:
-        logger.error('Exception while saving paused torrent for torrent [%s]', racing_torrent.name, e)
+    except sqlite3.DatabaseError:
+        logger.exception('Failed to save paused torrent [%s] to database', racing_torrent.name)
         return 1
 
     if torrent_hashes_to_pause:
@@ -336,7 +360,13 @@ def resume_torrents(client, paused_torrent_hashes):
 
 
 def post_race(config, torrent_hash):
-    client = connect(config)
+    # noinspection PyBroadException
+    try:
+        client = connect(config)
+    except Exception:
+        logger.exception('Failed to connect to qBittorrent')
+        return 1
+
     torrent = get_torrent(client, torrent_hash)
     if not torrent:
         logger.error('No torrent found with hash [%s], so no post race actions can be run', torrent_hash)
@@ -361,10 +391,12 @@ def edit_config(config_path):
     editor = os.environ.get('EDITOR', 'vi')
     if sys.platform.startswith('win') and not os.environ.get('EDITOR'):
         editor = 'notepad'
+    # noinspection PyBroadException
     try:
         subprocess.run([editor, config_path])
-    except Exception as e:
-        logger.error('Error: Could not open file: %s', config_path, e)
+    except Exception:
+        logger.exception('Could not open file: %s', config_path)
+        return 1
     return 0
 
 
@@ -372,5 +404,13 @@ def get_torrent(client, torrent_hash):
     return next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
 
 
+def update_log_level(debug_enabled):
+    level = logging.DEBUG if debug_enabled else logging.INFO
+    logging.getLogger().setLevel(level)
+
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(level)
+
+
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -18,8 +18,8 @@ def sample_config():
         'port': 1234,
         'username': 'admin',
         'password': 'password',
-        'race_categories': 'race',
-        'ignore_categories': 'ignore',
+        'race_categories': ['race'],
+        'ignore_categories': ['ignore'],
         'pausing': True,
         'ratio': 1.0
     }
@@ -49,14 +49,11 @@ def mock_config_dir(mocker):
 @pytest.fixture
 def mock_client_instance(mocker):
     mock = mocker.patch('qbitquick.qbit_quick.Client', autospec=True)
-    return mock.return_value
-
-
-@pytest.fixture
-def mock_file_open(mocker):
-    mock = mocker.mock_open(read_data='{}')
-    mocker.patch('builtins.open', mock)
-    return mock
+    mocked_client_instance = mock.return_value
+    mock_build_info = mocker.MagicMock()
+    mock_build_info.items.return_value = [("version", "1.2.3")]
+    mocked_client_instance.app.build_info = mock_build_info
+    return mocked_client_instance
 
 
 @pytest.fixture

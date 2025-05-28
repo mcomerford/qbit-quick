@@ -4,9 +4,10 @@
   "username": "admin",
   "password": "adminadmin",
   "pausing": true,
-  "race_categories": "",
-  "ignore_categories": "",
+  "race_categories": ["race"],
+  "ignore_categories": ["ignore"],
   "ratio": 1.0,
   "max_reannounce": 100,
-  "reannounce_frequency": 0.1
+  "reannounce_frequency": 5.0,
+  "debug_logging": false
 }

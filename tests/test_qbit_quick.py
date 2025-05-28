@@ -5,6 +5,7 @@ import re
 import time
 from importlib import resources
 from io import StringIO
+from itertools import cycle
 from unittest.mock import patch, mock_open
 
 import pytest
@@ -79,14 +80,36 @@ def test_connect_with_separate_host_and_port(mocker):
     mock_client_class.assert_called_once_with(host='localhost', port='1234', username='admin', password='password')
 
 
-def test_successful_race(mock_client_instance, mock_config, torrent_factory, tracker_factory,
+@pytest.mark.parametrize(
+    ('override_config', 'category'),
+    [
+        pytest.param(
+            {
+                'race_categories': [],
+                'debug_logging': True
+            },
+            '',
+            id='no-category'
+        ),
+        pytest.param(
+            {
+                'race_categories': ['race'],
+                'debug_logging': False
+            },
+            'race',
+            id='race-category'
+        ),
+    ],
+    indirect=['override_config']
+)
+def test_successful_race(mock_client_instance, override_config, mock_config, category, torrent_factory, tracker_factory,
                          mock_get_db_connection, mocker, monkeypatch):
     # Setup torrents
     racing_torrent = torrent_factory(
-        category='race', name='racing_torrent', state=TorrentState.CHECKING_DOWNLOAD
+        category=category, name='racing_torrent', state=TorrentState.CHECKING_DOWNLOAD
     )
     downloading_torrent = torrent_factory(
-        category='race', state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5, name='downloading_torrent'
+        category=category, state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5, name='downloading_torrent'
     )
     ignored_torrent = torrent_factory(
         category='ignore', state=TorrentState.UPLOADING, ratio=1.0, progress=1.0, name='ignored_torrent'
@@ -95,19 +118,16 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
         category='other', state=TorrentState.DOWNLOADING, progress=0.5, name='non_racing_torrent'
     )
     paused_torrent = torrent_factory(
-        category='race', state=TorrentState.PAUSED_DOWNLOAD, ratio=1.0, progress=0.5, name='paused_torrent'
+        category=category, state=TorrentState.PAUSED_DOWNLOAD, ratio=1.0, progress=0.5, name='paused_torrent'
     )
     uploading_torrent = torrent_factory(
-        category='race', state=TorrentState.UPLOADING, progress=1.0, ratio=2.0, name='uploading_torrent'
+        category=category, state=TorrentState.UPLOADING, progress=1.0, ratio=2.0, name='uploading_torrent'
     )
     torrents = [
         racing_torrent, non_racing_torrent, downloading_torrent, uploading_torrent, paused_torrent, ignored_torrent
     ]
 
-    paused_torrent_hashes = [
-        downloading_torrent.hash, ignored_torrent.hash, non_racing_torrent.hash, uploading_torrent.hash
-    ]
-    conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent.hash, paused_torrent_hashes)
+    conn, cur = initialise_mock_db(mock_get_db_connection)
 
     # Setup trackers
     working_tracker = tracker_factory(
@@ -117,7 +137,7 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
         status=TrackerStatus.DISABLED, url='disabled_tracker'
     )
     not_working_tracker = tracker_factory(
-        status=TrackerStatus.NOT_WORKING, url='not_working_tracker'
+        status=TrackerStatus.NOT_WORKING, url='not_working_tracker', msg='reason'
     )
     trackers = [
         working_tracker, disabled_tracker, not_working_tracker
@@ -154,10 +174,12 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
             return TorrentInfoList(torrents)
         if kwargs.get('torrent_hashes') == racing_torrent.hash:
             return TorrentInfoList([racing_torrent])
+        return None
 
     def torrents_trackers_side_effect(**kwargs):
         if kwargs.get('torrent_hash') == racing_torrent.hash:
             return TrackersList(trackers)
+        return None
 
     def update_tracker(tracker):
         merge_and_remove(tracker, next(tracker_statuses))
@@ -206,6 +228,119 @@ def test_successful_race(mock_client_instance, mock_config, torrent_factory, tra
     ])
     # Verify the script waited for TOO_MANY_REQUESTS_DELAY seconds, as the tracker returned 'too many requests'
     mock_sleep.assert_any_call(TOO_MANY_REQUESTS_DELAY)
+
+
+@pytest.mark.parametrize(
+    'override_config',
+    [{
+        'race_categories': None,
+        'ignore_categories': None,
+        'pausing': False,
+        'max_reannounce': 1
+    }],
+    indirect=True
+)
+def test_racing_paused_torrent(mock_client_instance, override_config, mock_config, torrent_factory, tracker_factory,
+                         mock_get_db_connection, mocker, monkeypatch):
+    # Setup torrents
+    racing_torrent = torrent_factory(
+        category='race', name='racing_torrent', state=TorrentState.CHECKING_DOWNLOAD
+    )
+    downloading_torrent = torrent_factory(
+        category='race', state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5, name='downloading_torrent'
+    )
+    ignored_torrent = torrent_factory(
+        category='ignore', state=TorrentState.UPLOADING, ratio=1.0, progress=1.0, name='ignored_torrent'
+    )
+    non_racing_torrent = torrent_factory(
+        category='other', state=TorrentState.DOWNLOADING, progress=0.5, name='non_racing_torrent'
+    )
+    paused_torrent = torrent_factory(
+        category='race', state=TorrentState.PAUSED_DOWNLOAD, ratio=1.0, progress=0.5, name='paused_torrent'
+    )
+    uploading_torrent = torrent_factory(
+        category='race', state=TorrentState.UPLOADING, progress=1.0, ratio=2.0, name='uploading_torrent'
+    )
+    torrents = [
+        racing_torrent, non_racing_torrent, downloading_torrent, uploading_torrent, paused_torrent, ignored_torrent
+    ]
+
+    conn, cur = initialise_mock_db(mock_get_db_connection)
+
+    # Setup trackers
+    working_tracker = tracker_factory(
+        status=TrackerStatus.NOT_CONTACTED, url='working_tracker'
+    )
+
+    # Update the trackers after each loop by hooking into the sleep function
+    def sleep_callback(_seconds):
+        racing_torrent.state = TorrentState.PAUSED_DOWNLOAD
+        working_tracker.update(next(tracker_statuses))
+
+    mocker.patch.object(qbitquick.qbit_quick, 'time', wraps=time)
+    mocker.patch('qbitquick.qbit_quick.time.sleep', side_effect=sleep_callback)
+
+    tracker_statuses = cycle([
+        {'status': TrackerStatus.WORKING},
+    ])
+
+    def torrents_info_side_effect(**kwargs):
+        if not kwargs:
+            return TorrentInfoList(torrents)
+        if kwargs.get('torrent_hashes') == racing_torrent.hash:
+            return TorrentInfoList([racing_torrent])
+        return None
+
+    mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
+
+    # Call the main function with the race command
+    mocker.patch('qbitquick.qbit_quick.os.path.exists', return_value=True)
+    monkeypatch.setattr('sys.argv', ['main', 'race', racing_torrent.hash])
+    exit_code = qbitquick.qbit_quick.main()
+
+    # Print out the torrents, so we have all the information if an assertion fails
+    print(json.dumps(torrents))
+
+    # Verify the script exited with an unsuccessful exit code, as the racing torrent has been paused
+    assert exit_code == 1
+    # Verify nothing was paused
+    mock_client_instance.torrents_pause.assert_not_called()
+    # Verify the racing torrent hash was not added to the database
+    cur.execute('SELECT COUNT(*) FROM racing_torrents')
+    assert cur.fetchone() == (0,)
+    # Verify no paused torrents were added to the database
+    cur.execute('SELECT COUNT(*) FROM paused_torrents')
+    assert cur.fetchone() == (0,)
+
+
+@pytest.mark.parametrize('category', [None, 'not_race'])
+def test_racing_torrent_with_invalid_category(category, mock_client_instance, override_config, mock_config, torrent_factory,
+                                         tracker_factory, mock_get_db_connection, mocker, monkeypatch):
+    # Setup racing torrent with no category
+    racing_torrent = torrent_factory(
+        category=category, name='racing_torrent', state=TorrentState.CHECKING_DOWNLOAD
+    )
+    conn, cur = initialise_mock_db(mock_get_db_connection)
+
+    mocker.patch.object(qbitquick.qbit_quick, 'time', wraps=time)
+
+    mock_client_instance.torrents_info.return_value = TorrentInfoList([racing_torrent])
+
+    # Call the main function with the race command
+    mocker.patch('qbitquick.qbit_quick.os.path.exists', return_value=True)
+    monkeypatch.setattr('sys.argv', ['main', 'race', racing_torrent.hash])
+    exit_code = qbitquick.qbit_quick.main()
+
+    # Verify the script exited with an unsuccessful exit code, as the racing torrent category doesn't match
+    assert exit_code == 1
+    # Verify nothing was paused
+    mock_client_instance.torrents_pause.assert_not_called()
+    # Verify the racing torrent hash was not added to the database
+    cur.execute('SELECT COUNT(*) FROM racing_torrents')
+    assert cur.fetchone() == (0,)
+    # Verify no paused torrents were added to the database
+    cur.execute('SELECT COUNT(*) FROM paused_torrents')
+    assert cur.fetchone() == (0,)
 
 
 def test_post_race(mock_client_instance, torrent_factory, mock_get_db_connection, mocker, monkeypatch):
@@ -327,22 +462,25 @@ def test_clear_db_does_nothing_if_input_is_not_y(mock_get_db_connection, torrent
     assert cur.fetchall() == [(torrent2.hash,)]
 
 
-def initialise_mock_db(mock_get_db_connection, racing_torrent_hash, paused_torrent_hashes):
+def initialise_mock_db(mock_get_db_connection, racing_torrent_hash=None, paused_torrent_hashes=None):
     """Create a connection to the in-memory database, create the tables and preload them with the provided data"""
+    if paused_torrent_hashes is None:
+        paused_torrent_hashes = []
     conn, cur = mock_get_db_connection
 
     ddl_file = resources.files('qbitquick') / 'resources' / 'race.ddl'
     with ddl_file.open('r') as f:
         cur.executescript(f.read())
-    cur.execute('BEGIN TRANSACTION')
-    cur.execute('''
-            INSERT INTO racing_torrents (racing_torrent_hash)
-            VALUES (?)
-        ''', (racing_torrent_hash,))
-    cur.executemany('''
-            INSERT INTO paused_torrents (racing_torrent_hash, paused_torrent_hash)
-            VALUES (?, ?)
-        ''', [(racing_torrent_hash, paused_torrent_hash,) for paused_torrent_hash in paused_torrent_hashes])
-    conn.commit()
+    if racing_torrent_hash and paused_torrent_hashes:
+        cur.execute('BEGIN TRANSACTION')
+        cur.execute('''
+                INSERT INTO racing_torrents (racing_torrent_hash)
+                VALUES (?)
+            ''', (racing_torrent_hash,))
+        cur.executemany('''
+                INSERT INTO paused_torrents (racing_torrent_hash, paused_torrent_hash)
+                VALUES (?, ?)
+            ''', [(racing_torrent_hash, paused_torrent_hash,) for paused_torrent_hash in paused_torrent_hashes])
+        conn.commit()
 
     return conn, cur
