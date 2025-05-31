@@ -1,6 +1,5 @@
 import contextlib
 import json
-import os.path
 import re
 import time
 from importlib import resources
@@ -36,18 +35,20 @@ def test_default_config_is_not_created_when_incomplete_args_are_passed_in(monkey
         assert "the following arguments are required: torrent_hash" in temp_stderr.getvalue()
 
 
-def test_default_config_is_created_if_one_does_not_exist(mock_config_dir, mocker, monkeypatch):
-    mocker.patch("qbitquick.qbit_quick.os.path.exists", return_value=False)
-    mock_makedirs = mocker.patch("qbitquick.qbit_quick.os.makedirs")
+def test_default_config_is_created_if_one_does_not_exist(mock_config_path, mocker, monkeypatch):
+    mock_exists = mocker.patch("pathlib.Path.exists", return_value=False)
+    mock_mkdir = mocker.patch("pathlib.Path.mkdir")
     monkeypatch.setattr("sys.argv", ["main", "config", "--print"])
     with patch("builtins.open", mock_open(read_data="{}")) as mock_file:
         handle = mock_file.return_value
         qbitquick.qbit_quick.main()
 
-        mock_makedirs.assert_called_once_with(mock_config_dir(), exist_ok=True)
+        mock_exists.assert_called_once()
+
+        mock_mkdir.assert_called_once_with(exist_ok=True, parents=True)
         handle.write.assert_called()  # Assert the default file is written
 
-        mock_file.assert_called_with(os.path.join(mock_config_dir(), "config.json"), "r")
+        mock_file.assert_called_with(mock_config_path() / "config.json", "r")
         handle.read.assert_called()  # Assert the newly written file is read
 
 
@@ -360,8 +361,8 @@ def test_post_race(mock_client_instance, torrent_factory, mock_get_db_connection
 
     mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
 
-    # Call the main function with the post_race command
-    command = "post_race"
+    # Call the main function with the post-race command
+    command = "post-race"
     exit_code = qbit_quick_main(command, racing_torrent, mocker, monkeypatch)
 
     # Verify the script exited with a successful exit code

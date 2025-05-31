@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from importlib import resources
+from pathlib import Path
 
 import jsonschema
 import platformdirs
@@ -14,7 +15,7 @@ from jsonschema import ValidationError, FormatChecker
 from qbittorrentapi import Client, TrackerStatus
 from qbittorrentapi.torrents import TorrentInfoList
 
-from qbitquick.config import APP_NAME, TOO_MANY_REQUESTS_DELAY
+from qbitquick.config import APP_NAME, TOO_MANY_REQUESTS_DELAY, QBQ_CONFIG_DIR
 from qbitquick.database.database_handler import load_all_paused_torrent_hashes, delete_torrent, \
     save_torrent_hashes_to_pause, load_torrents_to_unpause, clear_db, print_db
 from qbitquick.error_handler import setup_uncaught_exception_handler
@@ -36,7 +37,7 @@ def main():
     race_parser = subparsers.add_parser("race", help="race the provided torrent")
     race_parser.add_argument("torrent_hash", help="hash of the torrent to race")
 
-    post_race_parser = subparsers.add_parser("post_race", help="run the post race steps for the provided torrent, "
+    post_race_parser = subparsers.add_parser("post-race", help="run the post race steps for the provided torrent, "
                                                                "such as resuming torrents that were previously paused")
     post_race_parser.add_argument("torrent_hash", help="hash of the torrent that has finished racing")
 
@@ -53,18 +54,20 @@ def main():
     args = parser.parse_args(args=None if sys.argv[1:] else ["--help"])
     logger.info("%s called with arguments: %s", APP_NAME, args)
 
-    config_path = os.path.join(platformdirs.user_config_dir(appname=APP_NAME, appauthor=False), "config.json")
-    if not os.path.exists(config_path):
+    default_config_dir = platformdirs.user_config_dir(APP_NAME, appauthor=False)
+    config_path = Path(os.getenv(QBQ_CONFIG_DIR, default_config_dir))
+    config_file_path = config_path / "config.json"
+    if not config_file_path.exists():
         logger.info("config.json not found, so creating default")
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        default_config_path = resources.files("qbitquick") / "resources" / "default_config.json"
-        with default_config_path.open("rb") as src, open(config_path, "wb") as dst:
+        config_path.mkdir(exist_ok=True, parents=True)
+        default_config_file_path = resources.files("qbitquick") / "resources" / "default_config.json"
+        with default_config_file_path.open("rb") as src, open(config_file_path, "wb") as dst:
             dst.write(src.read())
 
-        logger.info("Created default config.json at: %s", config_path)
+        logger.info("Created default config.json at: %s", config_file_path)
 
-    with open(config_path, "r") as f:
-        logger.info("Loading config.json from: %s", config_path)
+    with open(config_file_path, "r") as f:
+        logger.info("Loading config.json from: %s", config_file_path)
         try:
             config = json.loads(f.read())
         except json.decoder.JSONDecodeError as e:
@@ -88,13 +91,13 @@ def main():
 
     if args.subparser_name == "race":
         return race(config, args.torrent_hash)
-    elif args.subparser_name == "post_race":
+    elif args.subparser_name == "post-race":
         return post_race(config, args.torrent_hash)
     elif args.subparser_name == "config":
         if args.print:
-            return print_config(config, config_path)
+            return print_config(config, config_file_path)
         elif args.edit:
-            return edit_config(config_path)
+            return edit_config(config_file_path)
         return None
     elif args.subparser_name == "db":
         if args.print:

@@ -1,7 +1,7 @@
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from random import getrandbits
 from unittest.mock import mock_open
 
@@ -41,9 +41,8 @@ def mock_config(monkeypatch, override_config):
 
 
 @pytest.fixture
-def mock_config_dir(mocker):
-    return mocker.patch("qbitquick.qbit_quick.platformdirs.user_config_dir",
-                        return_value=os.path.join("mock", "config"))
+def mock_config_path(mocker):
+    return mocker.patch("qbitquick.qbit_quick.platformdirs.user_config_dir", return_value=Path("mock/config"))
 
 
 @pytest.fixture

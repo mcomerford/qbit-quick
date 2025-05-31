@@ -39,7 +39,7 @@ Download the packaged wheel to the host where qBittorrent is running.
 
 The first time you run `qbit-quick race`, it will create a default `config.json` in your user's config directory (see
 [plaformdirs.user_config_dir](https://platformdirs.readthedocs.io/en/latest/api.html#user-config-directory)). You can
-override this on Linux by setting the `XDG_CONFIG_DIRS` environment variable. 
+override this location by setting the `QBQ_CONFIG_DIR` environment variable. 
 
 ### Example config
 
@@ -63,7 +63,7 @@ override this on Linux by setting the `XDG_CONFIG_DIRS` environment variable.
 }
 ```
 
-* `*host`:`str` - URL or hostname where your qBittorrent instance is running
+* `host`:`str` - URL or hostname where your qBittorrent instance is running
 * `port`:`int` - Port number if using hostname:port instead of a URL
 * `username`:`str` - Username if authentication is enabled
 * `password`:`str` - Password if authentication is enabled
@@ -101,18 +101,22 @@ based on which messages I've seen.
       output to a file. For example:
       ```bash
       #!/bin/bash
-      export LOGGING_CONFIG="/home/user/qbit-quick/logging_config.json"
+      export QBQ_LOGS_DIR="/home/user/qbit-quick/logs"
+      export QBQ_CONFIG_DIR="/home/user/qbit-quick/config"
+      export QBQ_STATE_DIR="/home/user/qbit-quick/state"
       /home/user/.local/bin/qbit-quick race "$1" >> ~/qbit-quick/logs/qbit-quick.log 2>&1
       ```
 5. Check the box next to `Run on torrent finished`
 6. Enter your command which will be something like:
-    * `/home/user/.local/bin/qbit-quick post_race "%I"` - The `%I` passes in the hash of the torrent that has finished
+    * `/home/user/.local/bin/qbit-quick post-race "%I"` - The `%I` passes in the hash of the torrent that has finished
     * Alternatively, you may want to point it to a bash script instead so you can set environment variables or log the
       output to a file. For example:
       ```bash
       #!/bin/bash
-      export LOGGING_CONFIG="/home/user/qbit-quick/logging_config.json"
-      /home/user/.local/bin/qbit-quick post_race "$1" >> ~/qbit-quick/logs/qbit-quick.log 2>&1
+      export QBQ_LOGS_DIR="/home/user/qbit-quick/logs"
+      export QBQ_CONFIG_DIR="/home/user/qbit-quick/config"
+      export QBQ_STATE_DIR="/home/user/qbit-quick/state"
+      /home/user/.local/bin/qbit-quick post-race "$1" >> ~/qbit-quick/logs/qbit-quick.log 2>&1
       ```
 
 ### Commands
@@ -124,19 +128,19 @@ enabled). This list of paused torrents is stored in a SQLite database so that th
 The script then continually restarts the torrent or reannounces to the tracker until at least 1 of the trackers is
 connected successfully or until it's reaches one of the preconfigured limits.
 
-    post_race <torrent_hash>
+    post-race <torrent_hash>
 
 Once a torrent is finished racing, it resumes all the torrents that were paused before it started racing. However, it
 will not resume a torrent if another race is in progress that would have also paused that one. For example:
 
-1. Torrent A starts racing and pauses Torrents X and Y. Torrent Z is not paused as it's still downloading. Torrent Q is
+1. Torrent A starts racing and pauses Torrents X and Y. Torrent Z is not paused as it's still downloading. Torrent P is
    already in a paused state, but not due to any other racing torrents, it's been paused manually.
 2. Torrent B starts racing before Torrent A has finished, but after Torrent Z has finished, so it just pauses
    Torrent Z, as Torrents X and Y are already paused. They would have been paused though if Torrent A hadn't already
-   paused them. This is different to Torrent Q, which was not paused by Torrent A.
+   paused them. This is different to Torrent P, which was not paused by Torrent A.
 3. Torrent A finishes, but it doesn't unpause any torrents, as Torrent B is still in progress and all 3 torrents,
    X, Y and Z would have also been paused by Torrent B had they not already been paused.
-4. Torrent B finishes and unpauses Torrents X, Y and Z. Torrent Q remains paused.
+4. Torrent B finishes and unpauses Torrents X, Y and Z. Torrent P remains paused.
 
 ```
 config --print
@@ -162,14 +166,28 @@ db --clear
 
 Clears all entries from the SQLite database. This could be useful if it's got into a bad/messy state for some reason.
 
-### Custom logging
+### Custom file location
 
-You can override the default `logging_config.json` by setting the `LOGGING_CONFIG` environment variable and pointing it
-to your own file.
-See: [logging-config-dictschema](https://docs.python.org/3/library/logging.config.html#logging-config-dictschema)
+You can override the default config directory by setting the `QBQ_CONFIG_DIR` environment variable. This is where
+qbit-quick will look for the config.json file.
 
 ```bash
-  export LOGGING_CONFIG="/home/user/qbit-quick/my_logging.json"
+  export QBQ_CONFIG_DIR="/home/user/qbit-quick/config"
+```
+
+You can override the default logs directory by setting the `QBQ_LOGS_DIR` environment variable. This is where qbit-quick
+will write its log files to.
+
+```bash
+  export QBQ_LOGS_DIR="/home/user/qbit-quick/logs"
+```
+
+You can override the default state directory by setting the `QBQ_STATE_DIR` environment variable. This is where
+qbit-quick will write its sqlite db, which is used to store the state of which torrents were paused, so it knows which
+ones to unpause again when the `post-race` command is run.
+
+```bash
+  export QBQ_STATE_DIR="/home/user/qbit-quick/state"
 ```
 
 ## Building

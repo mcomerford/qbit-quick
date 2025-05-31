@@ -1,10 +1,14 @@
+import os
 from pathlib import Path
 
-from platformdirs import user_state_dir
+from platformdirs import user_state_path
 
-from qbitquick.config import APP_NAME
+from qbitquick.config import APP_NAME, QBQ_LOGS_DIR
 
-log_filename = Path(user_state_dir(APP_NAME, appauthor=False)) / "logs" / f"{APP_NAME}.log"
+default_logs_path = user_state_path(APP_NAME, appauthor=False) / "logs"
+logs_path = Path(os.getenv(QBQ_LOGS_DIR, str(default_logs_path)))
+log_file_path = logs_path / f"{APP_NAME}.log"
+
 LOGGING_CONFIG = {
     "version": 1,
     "formatters": {
@@ -26,7 +30,7 @@ LOGGING_CONFIG = {
             "when": "midnight",
             "backupCount": 7,
             "formatter": "default",
-            "filename": str(log_filename)
+            "filename": str(log_file_path)
         }
     },
     "loggers": {
