@@ -14,14 +14,14 @@ from test_helpers import merge_and_remove
 @pytest.fixture
 def sample_config():
     return {
-        'host': 'localhost',
-        'port': 1234,
-        'username': 'admin',
-        'password': 'password',
-        'race_categories': ['race'],
-        'ignore_categories': ['ignore'],
-        'pausing': True,
-        'ratio': 1.0
+        "host": "localhost",
+        "port": 1234,
+        "username": "admin",
+        "password": "password",
+        "race_categories": ["race"],
+        "ignore_categories": ["ignore"],
+        "pausing": True,
+        "ratio": 1.0
     }
 
 
@@ -42,13 +42,13 @@ def mock_config(monkeypatch, override_config):
 
 @pytest.fixture
 def mock_config_dir(mocker):
-    return mocker.patch('qbitquick.qbit_quick.platformdirs.user_config_dir',
-                        return_value=os.path.join('mock', 'config'))
+    return mocker.patch("qbitquick.qbit_quick.platformdirs.user_config_dir",
+                        return_value=os.path.join("mock", "config"))
 
 
 @pytest.fixture
 def mock_client_instance(mocker):
-    mock = mocker.patch('qbitquick.qbit_quick.Client', autospec=True)
+    mock = mocker.patch("qbitquick.qbit_quick.Client", autospec=True)
     mocked_client_instance = mock.return_value
     mock_build_info = mocker.MagicMock()
     mock_build_info.items.return_value = [("version", "1.2.3")]
@@ -60,12 +60,12 @@ def mock_client_instance(mocker):
 def torrent_factory(mock_client_instance):
     def _create_torrent(**kwargs):
         default_values = {
-            'category': 'race',
-            'hash': f'%032x' % getrandbits(160),
-            'name': 'torrent_name',
-            'progress': 0,
-            'ratio': 0,
-            'state': TorrentState.UNKNOWN,
+            "category": "race",
+            "hash": f"%032x" % getrandbits(160),
+            "name": "torrent_name",
+            "progress": 0,
+            "ratio": 0,
+            "state": TorrentState.UNKNOWN,
         }
         default_values.update(kwargs)
         return TorrentDictionary(client=mock_client_instance, data=default_values)
@@ -76,9 +76,9 @@ def torrent_factory(mock_client_instance):
 def tracker_factory():
     def _create_tracker(**kwargs):
         default_values = {
-            'msg': '',
-            'status': TrackerStatus.DISABLED,
-            'url': '',
+            "msg": "",
+            "status": TrackerStatus.DISABLED,
+            "url": "",
         }
         default_values.update(kwargs)
         return Tracker(default_values)
@@ -88,16 +88,16 @@ def tracker_factory():
 @pytest.fixture
 def mock_get_db_connection(mocker):
     """Mock `get_db_connection` to return an in-memory SQLite database."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     cur = conn.cursor()
 
-    conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute("PRAGMA foreign_keys = ON")
 
     @contextmanager
     def _mock_connection():
         yield conn, cur
 
-    mocker.patch('qbitquick.database.database_handler.get_db_connection', _mock_connection)
+    mocker.patch("qbitquick.database.database_handler.get_db_connection", _mock_connection)
 
     yield conn, cur
 

@@ -169,7 +169,7 @@ to your own file.
 See: [logging-config-dictschema](https://docs.python.org/3/library/logging.config.html#logging-config-dictschema)
 
 ```bash
-  export LOGGING_CONFIG='/home/user/qbit-quick/my_logging.json'
+  export LOGGING_CONFIG="/home/user/qbit-quick/my_logging.json"
 ```
 
 ## Building

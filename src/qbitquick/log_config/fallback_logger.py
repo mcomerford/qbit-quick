@@ -3,8 +3,8 @@ import logging
 
 def setup_fallback_logging():
     formatter = logging.Formatter(
-        '%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s',
-        '%Y-%m-%d %H:%M:%S'
+        "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
+        "%Y-%m-%d %H:%M:%S"
     )
 
     console_handler = logging.StreamHandler()

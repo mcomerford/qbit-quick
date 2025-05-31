@@ -24,7 +24,7 @@ def assert_called_once_with_in_any_order(mock, *expected_args, **expected_kwargs
     expected_args_sorted, expected_kwargs_sorted = sort_args(expected_args, expected_kwargs)
 
     assert (actual_args_sorted, actual_kwargs_sorted) == (expected_args_sorted, expected_kwargs_sorted), \
-        f'Expected {expected_args_sorted, expected_kwargs_sorted} but got {actual_args_sorted, actual_kwargs_sorted}'
+        f"Expected {expected_args_sorted, expected_kwargs_sorted} but got {actual_args_sorted, actual_kwargs_sorted}"
 
 
 def merge_and_remove(original, updates):
