@@ -1,0 +1,21 @@
+<component name="ProjectCodeStyleConfiguration">
+  <code_scheme name="Project" version="173">
+    <option name="RIGHT_MARGIN" value="180" />
+    <Markdown>
+      <option name="KEEP_LINE_BREAKS_INSIDE_TEXT_BLOCKS" value="false" />
+    </Markdown>
+    <Python>
+      <option name="DICT_WRAPPING" value="2" />
+      <option name="DICT_NEW_LINE_AFTER_LEFT_BRACE" value="true" />
+      <option name="DICT_NEW_LINE_BEFORE_RIGHT_BRACE" value="true" />
+      <option name="OPTIMIZE_IMPORTS_SORT_NAMES_IN_FROM_IMPORTS" value="true" />
+    </Python>
+    <SqlCodeStyleSettings version="7">
+      <option name="KEYWORD_CASE" value="2" />
+      <option name="TYPE_CASE" value="2" />
+    </SqlCodeStyleSettings>
+    <codeStyleSettings language="Markdown">
+      <option name="RIGHT_MARGIN" value="120" />
+    </codeStyleSettings>
+  </code_scheme>
+</component>
