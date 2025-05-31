@@ -11,13 +11,12 @@ from pathlib import Path
 
 import jsonschema
 import platformdirs
-from jsonschema import ValidationError, FormatChecker
+from jsonschema import FormatChecker, ValidationError
 from qbittorrentapi import Client, TrackerStatus
 from qbittorrentapi.torrents import TorrentInfoList
 
-from qbitquick.config import APP_NAME, TOO_MANY_REQUESTS_DELAY, QBQ_CONFIG_DIR
-from qbitquick.database.database_handler import load_all_paused_torrent_hashes, delete_torrent, \
-    save_torrent_hashes_to_pause, load_torrents_to_unpause, clear_db, print_db
+from qbitquick.config import APP_NAME, QBQ_CONFIG_DIR, TOO_MANY_REQUESTS_DELAY
+from qbitquick.database.database_handler import clear_db, delete_torrent, load_all_paused_torrent_hashes, load_torrents_to_unpause, print_db, save_torrent_hashes_to_pause
 from qbitquick.error_handler import setup_uncaught_exception_handler
 from qbitquick.log_config.fallback_logger import setup_fallback_logging
 from qbitquick.log_config.logging_config import LOGGING_CONFIG
@@ -113,7 +112,7 @@ def connect(config):
     client_params = {"host", "port", "username", "password"}
     conn_info = {k: v for k, v in config.items() if k in client_params}
     client = Client(**conn_info)
-    client.auth_log_in() # This just checks that the connection and login is successful
+    client.auth_log_in()  # This just checks that the connection and login is successful
     logger.info("Connected to qBittorrent successfully")
 
     logger.info("qBittorrent: %s", client.app.version)
@@ -164,12 +163,10 @@ def race(config, racing_torrent_hash):
     # Check the category on the race torrent
     if race_categories:
         if not racing_torrent.category:
-            logger.info("Not racing torrent [%s], as no category is set. Valid race categories are: %s",
-                        racing_torrent.name, race_categories)
+            logger.info("Not racing torrent [%s], as no category is set. Valid race categories are: %s", racing_torrent.name, race_categories)
             return 1
         if racing_torrent.category not in race_categories:
-            logger.info("Not racing torrent [%s], as category [%s] is not in the list of racing categories %s",
-                        racing_torrent.name, racing_torrent.category, race_categories)
+            logger.info("Not racing torrent [%s], as category [%s] is not in the list of racing categories %s", racing_torrent.name, racing_torrent.category, race_categories)
             return 1
 
     # Remove any torrents with an ignored category
@@ -177,8 +174,7 @@ def race(config, racing_torrent_hash):
         ignored_torrents = TorrentInfoList([t for t in torrents if t.category in ignore_categories])
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Ignored torrents: %s", [t.name for t in ignored_torrents])
-        logger.info("Ignoring %d torrents, as their category is one of %s", len(ignored_torrents),
-                    ignore_categories)
+        logger.info("Ignoring %d torrents, as their category is one of %s", len(ignored_torrents), ignore_categories)
         torrents = TorrentInfoList([t for t in torrents if t not in ignored_torrents])
 
     torrent_hashes_to_pause = set()
@@ -198,12 +194,10 @@ def race(config, racing_torrent_hash):
                 logger.info("Ignoring torrent [%s] as it is already paused", torrent.name)
                 continue
             if not race_categories or not torrent.category or torrent.category not in race_categories:
-                logger.info("Adding torrent [%s] to pause list, as category [%s] is not a valid race category",
-                            torrent.name, torrent.category)
+                logger.info("Adding torrent [%s] to pause list, as category [%s] is not a valid race category", torrent.name, torrent.category)
                 torrent_hashes_to_pause.add(torrent.hash)
             elif torrent.ratio >= ratio:
-                logger.info("Adding torrent [%s] to pause list as ratio [%f] >= [%f]",
-                            torrent.name, torrent.ratio, ratio)
+                logger.info("Adding torrent [%s] to pause list as ratio [%f] >= [%f]", torrent.name, torrent.ratio, ratio)
                 torrent_hashes_to_pause.add(torrent.hash)
     else:
         logger.info("Pausing is disabled, so no torrents will be paused")
@@ -276,8 +270,7 @@ def reannounce_until_working(client, max_reannounce, reannounce_frequency, torre
             logger.info("Torrent [%s] has at least 1 working tracker", torrent.name)
             return True
         reannounce_count += 1
-        logger.info("Sent reannounce [%s] of [%s] for torrent [%s]",
-                    reannounce_count, max_reannounce if max_reannounce else "Unlimited", torrent.name)
+        logger.info("Sent reannounce [%s] of [%s] for torrent [%s]", reannounce_count, max_reannounce if max_reannounce else "Unlimited", torrent.name)
         time.sleep(reannounce_frequency)
 
     torrent = get_torrent(client, torrent_hash)
@@ -294,18 +287,15 @@ def handle_unregistered_torrent(client, torrent):
     reannouncing won't help and the torrent has to be stopped and restarted. Forcing a recheck is an
     easy way to do this.
     """
-    not_working_trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash)
-                            if tracker.status == TrackerStatus.NOT_WORKING]
+    not_working_trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash) if tracker.status == TrackerStatus.NOT_WORKING]
     for not_working_tracker in not_working_trackers:
         tracker_msg = not_working_tracker.msg.lower()
         if any(msg in tracker_msg for msg in unregistered_messages):
             if torrent.progress == 0:
-                logger.info("Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a recheck",
-                            torrent.name, not_working_tracker.msg, not_working_tracker.url)
+                logger.info("Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a recheck", torrent.name, not_working_tracker.msg, not_working_tracker.url)
                 client.torrents_recheck(torrent_hashes=torrent.hash)
             else:
-                logger.info("Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a restart",
-                            torrent.name, not_working_tracker.msg, not_working_tracker.url)
+                logger.info("Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a restart", torrent.name, not_working_tracker.msg, not_working_tracker.url)
                 client.torrents_stop(torrent_hashes=torrent.hash)
                 client.torrents_start(torrent_hashes=torrent.hash)
             return True
@@ -317,14 +307,10 @@ def handle_too_many_requests(client, torrent):
     If too many requests are sent in a short space of time, the tracker will block any further requests.
     It's not clear what the limit it is, but this adds a fixed delay to try and give the tracker a chance to recover.
     """
-    not_working_trackers = (
-        t for t in client.torrents_trackers(torrent_hash=torrent.hash)
-        if t.status in {TrackerStatus.NOT_WORKING, TrackerStatus.UPDATING}
-    )
+    not_working_trackers = (t for t in client.torrents_trackers(torrent_hash=torrent.hash) if t.status in {TrackerStatus.NOT_WORKING, TrackerStatus.UPDATING})
     for not_working_tracker in not_working_trackers:
         if "too many requests" in not_working_tracker.msg.lower():
-            logger.info("Tracker [%s] has reported [Too Many Requests], so adding a delay of [%ds] before trying again",
-                        not_working_tracker.url, TOO_MANY_REQUESTS_DELAY)
+            logger.info("Tracker [%s] has reported [Too Many Requests], so adding a delay of [%ds] before trying again", not_working_tracker.url, TOO_MANY_REQUESTS_DELAY)
             time.sleep(TOO_MANY_REQUESTS_DELAY)
             return True
     return False
@@ -332,20 +318,16 @@ def handle_too_many_requests(client, torrent):
 
 def reannounce(client, torrent):
     if any(tracker.status == TrackerStatus.WORKING for tracker in client.torrents_trackers(torrent_hash=torrent.hash)):
-        logger.info("Skipping reannounce for torrent [%s], as at least one tracker is already working",
-                    torrent.name)
+        logger.info("Skipping reannounce for torrent [%s], as at least one tracker is already working", torrent.name)
         return True
     client.torrents_reannounce(torrent_hashes=torrent.hash)
-    trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash) if
-                tracker.status != TrackerStatus.DISABLED]
+    trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash) if tracker.status != TrackerStatus.DISABLED]
     if logger.isEnabledFor(logging.DEBUG):
         for tracker in trackers:
             if tracker.msg:
-                logger.debug("Tracker [%s] has status [%s] and message [%s]",
-                             tracker.url, TrackerStatus(tracker.status).display, tracker.msg)
+                logger.debug("Tracker [%s] has status [%s] and message [%s]", tracker.url, TrackerStatus(tracker.status).display, tracker.msg)
             else:
-                logger.debug("Tracker [%s] has status [%s]",
-                             tracker.url, TrackerStatus(tracker.status).display)
+                logger.debug("Tracker [%s] has status [%s]", tracker.url, TrackerStatus(tracker.status).display)
 
     return any(tracker.status == TrackerStatus.WORKING for tracker in trackers)
 

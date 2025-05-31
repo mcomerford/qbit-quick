@@ -47,18 +47,15 @@ def save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause):
             # If it does exist, replace it via a deletion, which cascades to delete the associated paused torrents,
             # followed by an insertion.
             cur.execute("""
-                        INSERT OR
-                        REPLACE
-                        INTO racing_torrents (racing_torrent_hash)
-                        VALUES (?)
-                        """, (racing_torrent_hash,))
+                INSERT OR REPLACE INTO racing_torrents (racing_torrent_hash)
+                VALUES (?)
+            """, (racing_torrent_hash,))
 
             # Insert all the hashes of the paused torrents associated with the given racing torrent
             cur.executemany("""
-                            INSERT INTO paused_torrents (racing_torrent_hash, paused_torrent_hash)
-                            VALUES (?, ?)
-                            """, [(racing_torrent_hash, torrent_hash_to_pause) for torrent_hash_to_pause in
-                                  torrent_hashes_to_pause])
+                INSERT INTO paused_torrents (racing_torrent_hash, paused_torrent_hash)
+                VALUES (?, ?)
+            """, [(racing_torrent_hash, torrent_hash_to_pause) for torrent_hash_to_pause in torrent_hashes_to_pause])
 
             conn.commit()
         except sqlite3.DatabaseError:
@@ -69,9 +66,9 @@ def save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause):
 def load_all_paused_torrent_hashes():
     with get_db_connection() as (conn, cur):
         cur.execute("""
-                    SELECT DISTINCT paused_torrent_hash
-                    FROM paused_torrents
-                    """)
+            SELECT DISTINCT paused_torrent_hash
+            FROM paused_torrents
+        """)
 
         return [row[0] for row in cur.fetchall()]
 
@@ -85,11 +82,11 @@ def load_torrents_to_unpause(torrent_hash):
     """
     with get_db_connection() as (conn, cur):
         cur.execute("""
-                    SELECT paused_torrent_hash
-                    FROM paused_torrents
-                    GROUP BY paused_torrent_hash
-                    HAVING COUNT(*) = SUM(racing_torrent_hash = ?);
-                    """, (torrent_hash,))
+            SELECT paused_torrent_hash
+            FROM paused_torrents
+            GROUP BY paused_torrent_hash
+            HAVING COUNT(*) = SUM(racing_torrent_hash = ?);
+        """, (torrent_hash,))
 
         return [row[0] for row in cur.fetchall()]
 
@@ -97,10 +94,10 @@ def load_torrents_to_unpause(torrent_hash):
 def delete_torrent(torrent_hash):
     with get_db_connection() as (conn, cur):
         cur.execute("""
-                    DELETE
-                    FROM racing_torrents
-                    WHERE racing_torrent_hash = ?
-                    """, (torrent_hash,))
+            DELETE
+            FROM racing_torrents
+            WHERE racing_torrent_hash = ?
+        """, (torrent_hash,))
         conn.commit()
 
         return cur.rowcount
@@ -110,14 +107,14 @@ def print_db():
     logger.info("Database path: %s", db_file_path)
     with get_db_connection() as (conn, cur):
         cur.execute("""
-                    SELECT rt.racing_torrent_hash               AS racing_torrent_hash,
-                           GROUP_CONCAT(pt.paused_torrent_hash) AS paused_torrent_hashes
-                    FROM racing_torrents rt
-                             LEFT JOIN
-                         paused_torrents pt
-                         ON rt.racing_torrent_hash = pt.racing_torrent_hash
-                    GROUP BY rt.racing_torrent_hash;
-                    """)
+            SELECT rt.racing_torrent_hash               AS racing_torrent_hash,
+                   GROUP_CONCAT(pt.paused_torrent_hash) AS paused_torrent_hashes
+            FROM racing_torrents rt
+                     LEFT JOIN
+                 paused_torrents pt
+                 ON rt.racing_torrent_hash = pt.racing_torrent_hash
+            GROUP BY rt.racing_torrent_hash;
+        """)
         rows = cur.fetchall()
         headers = [desc[0] for desc in cur.description]  # Get column names
 

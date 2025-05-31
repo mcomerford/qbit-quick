@@ -9,14 +9,15 @@ keywords = ["qBittorrent", "racing"]
 packages = [{ include = "qbitquick", from = "src" }]
 
 [tool.poetry.dependencies]
-platformdirs = "*"
+jsonschema = "^4.24.0"
+platformdirs = "^4.3.8"
 python = ">=3.10"
-qbittorrent-api = "*"
-tabulate = "*"
+qbittorrent-api = "^2025.5.0"
+tabulate = "^0.9.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "*"
-pytest-mock = "*"
+pytest = "^8.3.5"
+pytest-mock = "^3.14.1"
 
 [tool.poetry.scripts]
 qbit-quick = "qbitquick.qbit_quick:main"

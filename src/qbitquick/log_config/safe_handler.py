@@ -1,6 +1,7 @@
 import os
 from logging.handlers import TimedRotatingFileHandler
 
+
 class SafeTimedRotatingFileHandler(TimedRotatingFileHandler):
     def __init__(self, filename, *args, **kwargs):
         log_dir = os.path.dirname(filename)  # Get directory part of the filename

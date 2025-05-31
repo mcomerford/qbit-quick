@@ -39,7 +39,7 @@ Download the packaged wheel to the host where qBittorrent is running.
 
 The first time you run `qbit-quick race`, it will create a default `config.json` in your user's config directory (see
 [plaformdirs.user_config_dir](https://platformdirs.readthedocs.io/en/latest/api.html#user-config-directory)). You can
-override this location by setting the `QBQ_CONFIG_DIR` environment variable. 
+override this location by setting the `QBQ_CONFIG_DIR` environment variable.
 
 ### Example config
 

@@ -6,7 +6,7 @@ from random import getrandbits
 from unittest.mock import mock_open
 
 import pytest
-from qbittorrentapi import TrackerStatus, TorrentState, Tracker, TorrentDictionary
+from qbittorrentapi import TorrentDictionary, TorrentState, Tracker, TrackerStatus
 
 from test_helpers import merge_and_remove
 
@@ -68,6 +68,7 @@ def torrent_factory(mock_client_instance):
         }
         default_values.update(kwargs)
         return TorrentDictionary(client=mock_client_instance, data=default_values)
+
     return _create_torrent
 
 
@@ -81,6 +82,7 @@ def tracker_factory():
         }
         default_values.update(kwargs)
         return Tracker(default_values)
+
     return _create_tracker
 
 
