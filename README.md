@@ -50,16 +50,12 @@ override this location by setting the `QBQ_CONFIG_DIR` environment variable.
   "username": "admin",
   "password": "adminadmin",
   "pausing": true,
-  "race_categories": [
-    "sonarr",
-    "radarr"
-  ],
-  "ignore_categories": [
-    "ignore"
-  ],
+  "race_categories": ["sonarr", "radarr"],
+  "ignore_categories": ["ignore"],
   "ratio": 1.0,
   "max_reannounce": 100,
-  "reannounce_frequency": 5.0
+  "reannounce_frequency": 5.0,
+  "debug_logging": false
 }
 ```
 
@@ -78,6 +74,7 @@ override this location by setting the `QBQ_CONFIG_DIR` environment variable.
 * `max_reannounce`:`int` - The maximum number of times to reannounce before giving up. If not set, the script will
   reannounce indefinitely until the torrent starts successfully.
 * `reannounce_frequency`:`float` - The number of seconds to wait between each reannounce. Defaults to 5.0s if not set.
+* `debug_logging`:`bool` - Set to `true` to enable debug level logging. Defaults to `false` if not set.
 
 ### Reannouncing doesn't always work
 
