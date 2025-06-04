@@ -94,9 +94,9 @@ def main():
         return post_race(config, args.torrent_hash)
     elif args.subparser_name == "config":
         if args.print:
-            return print_config(config, config_file_path)
+            return print_config(config, str(config_file_path))
         elif args.edit:
-            return edit_config(config_file_path)
+            return edit_config(str(config_file_path))
         return None
     elif args.subparser_name == "db":
         if args.print:
