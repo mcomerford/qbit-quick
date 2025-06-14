@@ -2,7 +2,7 @@
 name = "qbit-quick"
 version = "1.0.0"
 description = "qBittorrent racing tools"
-authors = ["TwistedSystem <twistedsystem8@gmail.com>"]
+authors = ["Michael Comerford <michaelcomerford1@gmail.com>"]
 license = "GPL-3.0-or-later"
 readme = "README.md"
 keywords = ["qBittorrent", "racing"]
