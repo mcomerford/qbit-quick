@@ -1,7 +1,10 @@
-def sort_args(args, kwargs):
+from typing import Any
+from unittest.mock import Mock
+
+def sort_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """ Recursively sort lists/dictionaries to make comparison order-agnostic. """
 
-    def sort_if_needed(value):
+    def sort_if_needed(value: object) -> object:
         if isinstance(value, list) or isinstance(value, set):
             return sorted(value)
         if isinstance(value, dict):
@@ -11,7 +14,7 @@ def sort_args(args, kwargs):
     return tuple(sort_if_needed(arg) for arg in args), {k: sort_if_needed(v) for k, v in kwargs.items()}
 
 
-def assert_called_once_with_in_any_order(mock, *expected_args, **expected_kwargs):
+def assert_called_once_with_in_any_order(mock: Mock, *expected_args: Any, **expected_kwargs: Any) -> None:
     """
     Custom matcher to check that the mock was called once with the expected arguments,
     ignoring the order of lists/dictionaries in the arguments.
@@ -27,7 +30,7 @@ def assert_called_once_with_in_any_order(mock, *expected_args, **expected_kwargs
         f"Expected {expected_args_sorted, expected_kwargs_sorted} but got {actual_args_sorted, actual_kwargs_sorted}"
 
 
-def merge_and_remove(original, updates):
+def merge_and_remove(original: dict[str, Any], updates: dict[str, Any]) -> None:
     """
     Updates `original` in place by merging values from `updates`.
     If a key in `updates` has a value of None, it will be removed from `original`.

@@ -11,9 +11,10 @@ log_file_path = logs_path / f"{APP_NAME}.log"
 
 LOGGING_CONFIG = {
     "version": 1,
+    "disable_existing_loggers": False,
     "formatters": {
         "default": {
-            "format": "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
+            "format": "%(asctime)s.%(msecs)03d %(threadName)s [%(levelname)s] %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S"
         }
     },
@@ -33,11 +34,26 @@ LOGGING_CONFIG = {
             "filename": str(log_file_path)
         }
     },
-    "loggers": {
-        "root": {
-            "level": "INFO",
-            "handlers": ["console", "file"]
-        }
+    "root": {
+        "level": "INFO",
+        "handlers": ["console", "file"]
     },
-    "disable_existing_loggers": False
+    "loggers": {
+        "uvicorn": {
+            "level": "INFO",
+            "handlers": ["console", "file"],
+            "propagate": False
+        },
+        "uvicorn.error": {
+            "level": "INFO",
+            "handlers": ["console", "file"],
+            "propagate": False
+        },
+        "uvicorn.access": {
+            "level": "INFO",
+            "handlers": ["console", "file"],
+            "propagate": False
+        }
+    }
 }
+

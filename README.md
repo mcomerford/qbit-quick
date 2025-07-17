@@ -116,16 +116,16 @@ based on which messages I've seen.
       /home/user/.local/bin/qbit-quick post-race "$1" >> ~/qbit-quick/logs/qbit-quick.log 2>&1
       ```
 
-### Commands
+### CLI Commands
 
-    race <torrent_hash>
+<a id="race"/>`race <torrent_hash>`
 
 When a torrent starts racing, it starts by pausing all other torrents that match the criteria (assuming pausing is
 enabled). This list of paused torrents is stored in a SQLite database so that they can be resumed afterwards.
 The script then continually restarts the torrent or reannounces to the tracker until at least 1 of the trackers is
 connected successfully or until it's reaches one of the preconfigured limits.
 
-    post-race <torrent_hash>
+<a id="post-race"/>`post-race <torrent_hash>`
 
 Once a torrent is finished racing, it resumes all the torrents that were paused before it started racing. However, it
 will not resume a torrent if another race is in progress that would have also paused that one. For example:
@@ -139,29 +139,84 @@ will not resume a torrent if another race is in progress that would have also pa
    X, Y and Z would have also been paused by Torrent B had they not already been paused.
 4. Torrent B finishes and unpauses Torrents X, Y and Z. Torrent P remains paused.
 
-```
-config --print
-```
+<a id="config-print"/>`config --print`
 
 Prints out the current config.
 
-```
-config --edit
-```
+`config --edit`
 
 Opens the current config in the default editor.
 
-```
-db --print
-```
+`db --print`
 
 Prints out the contents of the SQLite database in a tabulated ascii format.
 
-```
-db --clear
-```
+`db --clear`
 
 Clears all entries from the SQLite database. This could be useful if it's got into a bad/messy state for some reason.
+
+`db --delete torrent_hash`
+
+Deletes the specified torrent has from the SQLite database.
+
+`server`
+
+Starts qbit-quick in server mode. This is useful if you want to run qbit-quick in a docker container, as it allows the
+app to remain running and commands can be triggered via the HTTP interface.\
+It's important to note that some of the commands run asynchronously, and although these commands can be cancelled using
+their associated `task_id`, this is not a hard termination. It is a request for the command to stop gracefully at the
+next appropriate point.
+
+### HTTP Endpoints
+
+Assuming the server is running on 127.0.0.1 and is running on port 8081, these would be the accessible endpoints:
+
+`[GET] http://127.0.0.1:8081/`
+
+Returns a list of all available endpoints.
+
+`[POST] http://127.0.0.1:8081/race/<torrent_hash>`
+
+See: [race](#race) for more details.\
+Returns a JSON message containing a `task_id`, as this command is asynchronous.
+The `task_id` can be used to track or cancel the associated task.
+
+`[POST] http://127.0.0.1:8081/post-race/<torrent_hash>`
+
+See: [post-race](#post-race) for more details.\
+This task runs synchronously, as there would be no appropriate point to interrupt it (this is because all the torrent
+hashes are passed directly to qbittorrent in a single API call).
+
+`[DELETE|POST] http://127.0.0.1:8081/cancel/<task_id>`
+
+Requests the task associated with the given `task_id` to terminate at the next appropriate point (this does not just
+kill the running process).
+
+`[GET] http://127.0.0.1:8081/tasks`
+
+Returns a list of all currently running tasks e.g. all torrents currently racing along with their task_id, which can be
+used to cancel them.
+
+`[GET] http://127.0.0.1:8081/config`
+
+Returns the current JSON config.
+
+`[POST|PUT] http://127.0.0.1:8081/config`
+
+Saves the provided JSON config as the current config, if it is valid.
+
+`[GET] http://127.0.0.1:8081/db`
+
+Returns the current SQLite database as an HTML table.
+
+`[DELETE] http://127.0.0.1:8081/db/<torrent_hash>`
+
+Deletes the specified entry from the SQLite database.
+
+`[DELETE] http://127.0.0.1:8081/db`
+
+Deletes all entries from the SQLite database.
+
 
 ### Custom file location
 

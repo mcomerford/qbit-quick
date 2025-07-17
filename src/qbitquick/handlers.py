@@ -1,118 +1,32 @@
-import argparse
 import json
 import logging.config
 import os
 import sqlite3
 import subprocess
 import sys
-import time
-from importlib import resources
-from pathlib import Path
+import threading
+from typing import Any
 
-import jsonschema
-import platformdirs
-from jsonschema import FormatChecker, ValidationError
-from qbittorrentapi import Client, TrackerStatus
+import uvicorn
+from fastapi import FastAPI
+from qbittorrentapi import Client, TorrentDictionary, TrackerStatus
 from qbittorrentapi.torrents import TorrentInfoList
 
-from qbitquick.config import APP_NAME, QBQ_CONFIG_DIR, TOO_MANY_REQUESTS_DELAY
-from qbitquick.database.database_handler import clear_db, delete_torrent, load_all_paused_torrent_hashes, load_torrents_to_unpause, print_db, save_torrent_hashes_to_pause
-from qbitquick.error_handler import setup_uncaught_exception_handler
-from qbitquick.log_config.fallback_logger import setup_fallback_logging
+from qbitquick.config import TOO_MANY_REQUESTS_DELAY, UNREGISTERED_MESSAGES
+from qbitquick.database.database_handler import delete_torrent, load_all_paused_torrent_hashes, load_torrents_to_unpause, save_torrent_hashes_to_pause
 from qbitquick.log_config.logging_config import LOGGING_CONFIG
+from qbitquick.task_manager import TaskInterrupted
+from qbitquick.utils import interruptible_sleep, is_port_in_use
 
 logger = logging.getLogger(__name__)
-setup_fallback_logging()
-setup_uncaught_exception_handler()
-logging.config.dictConfig(LOGGING_CONFIG)
-
-unregistered_messages = ["unregistered", "stream truncated"]
 
 
-def main():
-    parser = argparse.ArgumentParser(description="qBittorrent racing tools")
-    subparsers = parser.add_subparsers(dest="subparser_name")
-
-    race_parser = subparsers.add_parser("race", help="race the provided torrent")
-    race_parser.add_argument("torrent_hash", help="hash of the torrent to race")
-
-    post_race_parser = subparsers.add_parser("post-race", help="run the post race steps for the provided torrent, "
-                                                               "such as resuming torrents that were previously paused")
-    post_race_parser.add_argument("torrent_hash", help="hash of the torrent that has finished racing")
-
-    config_parser = subparsers.add_parser("config", help="perform actions related to the config")
-    config_parser_group = config_parser.add_mutually_exclusive_group(required=True)
-    config_parser_group.add_argument("--print", action="store_true", help="print the current config")
-    config_parser_group.add_argument("--edit", action="store_true", help="edit the current config or create one if it does not exist")
-
-    db_parser = subparsers.add_parser("db", help="perform actions related to the sqlite database")
-    db_parser = db_parser.add_mutually_exclusive_group(required=True)
-    db_parser.add_argument("--print", action="store_true", help="print the contents of the database")
-    db_parser.add_argument("--clear", action="store_true", help="clear the database")
-
-    args = parser.parse_args(args=None if sys.argv[1:] else ["--help"])
-    logger.info("%s called with arguments: %s", APP_NAME, args)
-
-    default_config_dir = platformdirs.user_config_dir(APP_NAME, appauthor=False)
-    config_path = Path(os.getenv(QBQ_CONFIG_DIR, default_config_dir))
-    config_file_path = config_path / "config.json"
-    if not config_file_path.exists():
-        logger.info("config.json not found, so creating default")
-        config_path.mkdir(exist_ok=True, parents=True)
-        default_config_file_path = resources.files("qbitquick") / "resources" / "default_config.json"
-        with default_config_file_path.open("rb") as src, open(config_file_path, "wb") as dst:
-            dst.write(src.read())
-
-        logger.info("Created default config.json at: %s", config_file_path)
-
-    with open(config_file_path, "r") as f:
-        logger.info("Loading config.json from: %s", config_file_path)
-        try:
-            config = json.loads(f.read())
-        except json.decoder.JSONDecodeError as e:
-            logger.error("Failed to load config.json: %s", e)
-            return 1
-        logger.debug("Loaded config: %s", config)
-
-    config_schema_path = resources.files("qbitquick") / "resources" / "config_schema.json"
-    with config_schema_path.open("r") as f:
-        config_schema = json.loads(f.read())
-
-    try:
-        jsonschema.validate(instance=config, schema=config_schema, format_checker=FormatChecker())
-    except ValidationError as e:
-        logger.error("Invalid config: %s", e.message)
-        return 1
-
-    debug_logging = config["debug_logging"] if "debug_logging" in config else False
-    update_log_level(debug_logging)
-    logger.info("DEBUG level logging %s", "enabled" if debug_logging else "disabled")
-
-    if args.subparser_name == "race":
-        return race(config, args.torrent_hash)
-    elif args.subparser_name == "post-race":
-        return post_race(config, args.torrent_hash)
-    elif args.subparser_name == "config":
-        if args.print:
-            return print_config(config, str(config_file_path))
-        elif args.edit:
-            return edit_config(str(config_file_path))
-        return None
-    elif args.subparser_name == "db":
-        if args.print:
-            return print_db()
-        elif args.clear:
-            return clear_db()
-        return None
-    return None
-
-
-def connect(config):
+def connect(config: dict[str, Any]) -> Client:
     # Filter config to just the qBittorrent connection info
-    client_params = {"host", "port", "username", "password"}
-    conn_info = {k: v for k, v in config.items() if k in client_params}
-    client = Client(**conn_info)
-    client.auth_log_in()  # This just checks that the connection and login is successful
+    client_params: set[str] = {"host", "port", "username", "password"}
+    conn_info: dict[Any, Any] = {k: v for k, v in config.items() if k in client_params}
+    client: Client = Client(**conn_info)
+    client.auth_log_in()  # This just checks that the connection and login was successful
     logger.info("Connected to qBittorrent successfully")
 
     logger.info("qBittorrent: %s", client.app.version)
@@ -124,13 +38,8 @@ def connect(config):
     return client
 
 
-def race(config, racing_torrent_hash):
-    # noinspection PyBroadException
-    try:
-        client = connect(config)
-    except Exception:
-        logger.exception("Failed to connect to qBittorrent")
-        return 1
+def race(config: dict[str, Any], racing_torrent_hash: str, stop_event: threading.Event) -> int:
+    client = connect(config)
 
     race_categories = config["race_categories"] if "race_categories" in config else []
     if not race_categories:
@@ -205,14 +114,17 @@ def race(config, racing_torrent_hash):
     # When a new torrent is added, the data will be checked first. Need to wait until this is done.
     # Can be improved if this is ever implemented: https://github.com/qbittorrent/qBittorrent/issues/9177
     while True:
-        racing_torrent = get_torrent(client, racing_torrent_hash)
+        racing_torrent = _get_torrent(client, racing_torrent_hash)
         if not racing_torrent:
             logger.error("No torrent found with hash [%s]", racing_torrent_hash)
             return 1
+
+        _check_for_interrupt(stop_event, racing_torrent.name)
+
         if not racing_torrent.state_enum.is_checking:
             break
         logger.debug("Waiting while torrent [%s] is checking...", racing_torrent.name)
-        time.sleep(0.1)
+        interruptible_sleep(0.1, stop_event)
 
     if racing_torrent.state_enum.is_paused:
         logger.info("Not racing torrent [%s] as it is paused/stopped", racing_torrent.name)
@@ -223,33 +135,40 @@ def race(config, racing_torrent_hash):
 
     try:
         save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause)
-    except sqlite3.DatabaseError:
-        logger.exception("Failed to save paused torrent [%s] to database", racing_torrent.name)
-        return 1
+    except sqlite3.DatabaseError as e:
+        raise IOError(f"Failed to save paused torrent [{racing_torrent.name}] to database") from e
 
     if torrent_hashes_to_pause:
         logger.info("Pausing [%d] torrents before racing", len(torrent_hashes_to_pause))
         client.torrents_pause(torrent_hashes=torrent_hashes_to_pause)
 
     # Continually reannounce until the torrent is available in the tracker
-    if not reannounce_until_working(client, max_reannounce, reannounce_frequency, racing_torrent_hash):
+    try:
+        if not reannounce_until_working(client, max_reannounce, reannounce_frequency, racing_torrent_hash, stop_event):
+            resume_torrents(client, torrent_hashes_to_pause)
+            return 1
+    except TaskInterrupted:
         resume_torrents(client, torrent_hashes_to_pause)
-        return 1
+        raise
 
     logger.info("Racing complete for torrent [%s]", racing_torrent.name)
+    client.auth_log_out()
+    logger.info("Logged out of qBittorrent successfully")
     return 0
 
 
-def reannounce_until_working(client, max_reannounce, reannounce_frequency, torrent_hash):
+def reannounce_until_working(client: Client, max_reannounce: int | None, reannounce_frequency: float, torrent_hash: str, stop_event: threading.Event) -> bool:
     reannounce_count = 0
     while not max_reannounce or reannounce_count < max_reannounce:
-        torrent = get_torrent(client, torrent_hash)
+        torrent = _get_torrent(client, torrent_hash)
         if not torrent:
             logger.error("Aborting race, as torrent with hash [%s] no longer exists", torrent_hash)
             return False
         if torrent.state_enum.is_stopped:
             logger.error("Aborting race, as torrent [%s] has been stopped", torrent.name)
             return False
+
+        _check_for_interrupt(stop_event, torrent.name)
 
         has_updating = False
         trackers = client.torrents_trackers(torrent_hash=torrent_hash)
@@ -262,18 +181,18 @@ def reannounce_until_working(client, max_reannounce, reannounce_frequency, torre
 
         if has_updating:
             logger.debug("Waiting on torrent [%s] while trackers are updating...", torrent.name)
-            time.sleep(reannounce_frequency)
+            interruptible_sleep(reannounce_frequency, stop_event)
             continue
-        if handle_unregistered_torrent(client, torrent) or handle_too_many_requests(client, torrent):
+        if handle_unregistered_torrent(client, torrent) or handle_too_many_requests(client, torrent, stop_event):
             continue
         if reannounce(client, torrent):
             logger.info("Torrent [%s] has at least 1 working tracker", torrent.name)
             return True
         reannounce_count += 1
         logger.info("Sent reannounce [%s] of [%s] for torrent [%s]", reannounce_count, max_reannounce if max_reannounce else "Unlimited", torrent.name)
-        time.sleep(reannounce_frequency)
+        interruptible_sleep(reannounce_frequency, stop_event)
 
-    torrent = get_torrent(client, torrent_hash)
+    torrent = _get_torrent(client, torrent_hash)
     if torrent:
         logger.info("Giving up, as there are still no working trackers for torrent [%s]", torrent.name)
     else:
@@ -281,7 +200,7 @@ def reannounce_until_working(client, max_reannounce, reannounce_frequency, torre
     return False
 
 
-def handle_unregistered_torrent(client, torrent):
+def handle_unregistered_torrent(client: Client, torrent: TorrentDictionary) -> bool:
     """
     When a new torrent is added, the tracker may state that the torrent is unregistered. In this case,
     reannouncing won't help and the torrent has to be stopped and restarted. Forcing a recheck is an
@@ -290,7 +209,7 @@ def handle_unregistered_torrent(client, torrent):
     not_working_trackers = [tracker for tracker in client.torrents_trackers(torrent_hash=torrent.hash) if tracker.status == TrackerStatus.NOT_WORKING]
     for not_working_tracker in not_working_trackers:
         tracker_msg = not_working_tracker.msg.lower()
-        if any(msg in tracker_msg for msg in unregistered_messages):
+        if any(msg in tracker_msg for msg in UNREGISTERED_MESSAGES):
             if torrent.progress == 0:
                 logger.info("Torrent [%s] has been marked as [%s] in tracker [%s], so forcing a recheck", torrent.name, not_working_tracker.msg, not_working_tracker.url)
                 client.torrents_recheck(torrent_hashes=torrent.hash)
@@ -302,7 +221,7 @@ def handle_unregistered_torrent(client, torrent):
     return False
 
 
-def handle_too_many_requests(client, torrent):
+def handle_too_many_requests(client: Client, torrent: TorrentDictionary, stop_event: threading.Event) -> bool:
     """
     If too many requests are sent in a short space of time, the tracker will block any further requests.
     It's not clear what the limit it is, but this adds a fixed delay to try and give the tracker a chance to recover.
@@ -311,12 +230,12 @@ def handle_too_many_requests(client, torrent):
     for not_working_tracker in not_working_trackers:
         if "too many requests" in not_working_tracker.msg.lower():
             logger.info("Tracker [%s] has reported [Too Many Requests], so adding a delay of [%ds] before trying again", not_working_tracker.url, TOO_MANY_REQUESTS_DELAY)
-            time.sleep(TOO_MANY_REQUESTS_DELAY)
+            interruptible_sleep(TOO_MANY_REQUESTS_DELAY, stop_event)
             return True
     return False
 
 
-def reannounce(client, torrent):
+def reannounce(client: Client, torrent: TorrentDictionary) -> bool:
     if any(tracker.status == TrackerStatus.WORKING for tracker in client.torrents_trackers(torrent_hash=torrent.hash)):
         logger.info("Skipping reannounce for torrent [%s], as at least one tracker is already working", torrent.name)
         return True
@@ -332,7 +251,7 @@ def reannounce(client, torrent):
     return any(tracker.status == TrackerStatus.WORKING for tracker in trackers)
 
 
-def resume_torrents(client, paused_torrent_hashes):
+def resume_torrents(client: Client, paused_torrent_hashes: list[str] | set[str]) -> None:
     if paused_torrent_hashes:
         logger.info("Resuming [%d] previously paused torrents", len(paused_torrent_hashes))
         found_paused_torrent_hashes = {t.hash for t in (client.torrents_info(torrent_hashes=paused_torrent_hashes) or [])}
@@ -344,15 +263,13 @@ def resume_torrents(client, paused_torrent_hashes):
         logger.info("No paused torrents to resume")
 
 
-def post_race(config, torrent_hash):
-    # noinspection PyBroadException
+def post_race(config: dict[str, Any], torrent_hash: str) -> int:
     try:
         client = connect(config)
-    except Exception:
-        logger.exception("Failed to connect to qBittorrent")
-        return 1
+    except Exception as e:
+        raise ConnectionError("Failed to connect to qBittorrent") from e
 
-    torrent = get_torrent(client, torrent_hash)
+    torrent = _get_torrent(client, torrent_hash)
     if not torrent:
         logger.error("No torrent found with hash [%s], so no post race actions can be run", torrent_hash)
         return 1
@@ -366,36 +283,36 @@ def post_race(config, torrent_hash):
     return 0
 
 
-def print_config(config, config_path):
-    print("Config Path: " + config_path)
+def print_config(config_path: str, config: dict[str, Any]) -> int:
+    print(f"Config Path: {config_path}")
     print(json.dumps(config, indent=2))
     return 0
 
 
-def edit_config(config_path):
+def edit_config(config_path: str) -> int:
     editor = os.environ.get("EDITOR", "vi")
     if sys.platform.startswith("win") and not os.environ.get("EDITOR"):
         editor = "notepad"
     # noinspection PyBroadException
     try:
         subprocess.run([editor, config_path])
-    except Exception:
-        logger.exception("Could not open file: %s", config_path)
-        return 1
+    except Exception as e:
+        raise IOError(f"Could not open file: {config_path}") from e
     return 0
 
 
-def get_torrent(client, torrent_hash):
+def start_server(app: FastAPI, port: int) -> None:
+    logger.info("Starting server on port %d", port)
+    if is_port_in_use(port):
+        raise OSError(f"Port [{port}] already in use")
+
+    uvicorn.run(app, host="0.0.0.0", port=port, log_config=LOGGING_CONFIG)
+
+
+def _get_torrent(client: Client, torrent_hash: str) -> TorrentDictionary | None:
     return next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
 
 
-def update_log_level(debug_enabled):
-    level = logging.DEBUG if debug_enabled else logging.INFO
-    logging.getLogger().setLevel(level)
-
-    for handler in logging.getLogger().handlers:
-        handler.setLevel(level)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def _check_for_interrupt(stop_event: threading.Event, torrent_name: str) -> None:
+    if stop_event and stop_event.is_set():
+        raise TaskInterrupted(f"Cancellation request received for torrent [{torrent_name}], so stopping race")

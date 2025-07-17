@@ -1,9 +1,12 @@
 import logging
 import os
 import sqlite3
+from collections import defaultdict
 from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
+from sqlite3 import Connection, Cursor
+from typing import Generator
 
 from platformdirs import user_state_dir
 from tabulate import tabulate
@@ -18,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def get_db_connection():
+def get_db_connection() -> Generator[tuple[Connection, Cursor], None, None]:
     """
     Returns a database connection and cursor with foreign key constraints enabled.
     """
@@ -35,7 +38,7 @@ def get_db_connection():
         conn.close()
 
 
-def save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause):
+def save_torrent_hashes_to_pause(racing_torrent_hash: str, torrent_hashes_to_pause: set[str]) -> None:
     with get_db_connection() as (conn, cur):
         ddl_file = resources.files("qbitquick") / "resources" / "race.ddl"
         with ddl_file.open("r") as f:
@@ -63,7 +66,7 @@ def save_torrent_hashes_to_pause(racing_torrent_hash, torrent_hashes_to_pause):
             raise
 
 
-def load_all_paused_torrent_hashes():
+def load_all_paused_torrent_hashes() -> list[str]:
     with get_db_connection() as (conn, cur):
         cur.execute("""
             SELECT DISTINCT paused_torrent_hash
@@ -73,7 +76,7 @@ def load_all_paused_torrent_hashes():
         return [row[0] for row in cur.fetchall()]
 
 
-def load_torrents_to_unpause(torrent_hash):
+def load_torrents_to_unpause(torrent_hash: str) -> list[str]:
     """
     This query gets all the paused torrents associated with the given racing torrent, but excludes any
     torrents that are also paused by other racing torrents, as it implies those haven't finished yet.
@@ -91,7 +94,7 @@ def load_torrents_to_unpause(torrent_hash):
         return [row[0] for row in cur.fetchall()]
 
 
-def delete_torrent(torrent_hash):
+def delete_torrent(torrent_hash: str) -> int:
     with get_db_connection() as (conn, cur):
         cur.execute("""
             DELETE
@@ -103,36 +106,56 @@ def delete_torrent(torrent_hash):
         return cur.rowcount
 
 
-def print_db():
+def print_db() -> int:
     logger.info("Database path: %s", db_file_path)
+    headers, table_data = get_table_data()
+    print(tabulate(table_data, headers=headers, tablefmt="grid"))
+    return 0
+
+
+def clear_db() -> int:
+    with get_db_connection() as (conn, cur):
+        # noinspection SqlWithoutWhere
+        cur.execute("DELETE FROM racing_torrents")
+        conn.commit()
+        logger.info("Database cleared of all [%d] rows", cur.rowcount)
+        return 0
+
+
+def get_table_data() -> tuple[list[str], list[list[str]]]:
     with get_db_connection() as (conn, cur):
         cur.execute("""
-            SELECT rt.racing_torrent_hash               AS racing_torrent_hash,
-                   GROUP_CONCAT(pt.paused_torrent_hash) AS paused_torrent_hashes
+            SELECT rt.racing_torrent_hash,
+                   pt.paused_torrent_hash
             FROM racing_torrents rt
-                     LEFT JOIN
-                 paused_torrents pt
-                 ON rt.racing_torrent_hash = pt.racing_torrent_hash
-            GROUP BY rt.racing_torrent_hash;
+            LEFT JOIN paused_torrents pt
+              ON rt.racing_torrent_hash = pt.racing_torrent_hash
+            ORDER BY rt.racing_torrent_hash, pt.paused_torrent_hash
         """)
         rows = cur.fetchall()
-        headers = [desc[0] for desc in cur.description]  # Get column names
 
-        table_data = []
-        for racing_torrent_hash, paused_torrent_hashes in rows:
-            paused_torrent_hashes_list = paused_torrent_hashes.split(",") if paused_torrent_hashes else []
-            new_line_separated = os.linesep.join(paused_torrent_hashes_list)
-            row = [racing_torrent_hash, new_line_separated]
-            table_data.append(row)
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for racing_torrent_hash, paused_torrent_hash in rows:
+        if paused_torrent_hash:
+            grouped[racing_torrent_hash].append(paused_torrent_hash)
+        else:
+            grouped.setdefault(racing_torrent_hash, [])
 
-        print(tabulate(table_data, headers=headers, tablefmt="grid"))
+    headers = ["racing_torrent_hash", "paused_torrent_hashes"]
+    table_data = [
+        [racing_hash, os.linesep.join(paused_hashes)]
+        for racing_hash, paused_hashes in grouped.items()
+    ]
+    return headers, table_data
 
 
-def clear_db():
-    confirm = input("This will delete ALL entries from the database. Are you sure? (y/n)")
-    if confirm.lower() == "y":
-        with get_db_connection() as (conn, cur):
-            # noinspection SqlWithoutWhere
-            cur.execute("DELETE FROM racing_torrents")
-            conn.commit()
-            logger.info("Database cleared of all [%d] rows", cur.rowcount)
+def _render_html_table(headers: list[str], table_data: list[str]) -> str:
+    if table_data:
+        return tabulate(table_data, headers=headers, tablefmt="html")
+    else:
+        header_html = "".join(f"<th>{header}</th>" for header in headers)
+        return f"""
+                <table>
+                    <thead><tr>{header_html}</tr></thead>
+                </table>
+                """
