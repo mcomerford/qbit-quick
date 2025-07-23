@@ -2,30 +2,45 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "host": {
-      "type": "string"
-    },
-    "port": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 65535
-    },
-    "username": {
-      "type": "string",
-      "minLength": 1
-    },
-    "password": {
-      "type": "string",
-      "minLength": 1
-    },
-    "pausing": {
-      "type": "boolean"
-    },
-    "race_categories": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "qbittorrent": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "host",
+        "username",
+        "password"
+      ],
+      "if": {
+        "properties": {
+          "host": {
+            "type": "string",
+            "format": "ipv4"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "port"
+        ]
+      },
+      "additionalProperties": false
     },
     "ignore_categories": {
       "type": "array",
@@ -33,39 +48,56 @@
         "type": "string"
       }
     },
-    "ratio": {
-      "type": "number",
-      "minimum": 0
+    "racing": {
+      "type": "object",
+      "properties": {
+        "race_categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pausing": {
+          "type": "object",
+          "properties": {
+            "ratio": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "max_reannounce": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reannounce_frequency": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
-    "max_reannounce": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "reannounce_frequency": {
-      "type": "number",
-      "minimum": 0
+    "pausing": {
+      "type": "object",
+      "properties": {
+        "time_since_active": {
+          "type": "string",
+          "pattern": "^(?:(\\d+)w)?(?:(\\d+)d)?(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?$"
+        },
+        "time_active": {
+          "type": "string",
+          "pattern": "^(?:(\\d+)w)?(?:(\\d+)d)?(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?$"
+        }
+      },
+      "additionalProperties": false
     },
     "debug_logging": {
       "type": "boolean"
     }
   },
   "required": [
-    "host",
-    "username",
-    "password"
+    "qbittorrent"
   ],
-  "if": {
-    "properties": {
-      "host": {
-        "type": "string",
-        "format": "ipv4"
-      }
-    }
-  },
-  "then": {
-    "required": [
-      "port"
-    ]
-  },
   "additionalProperties": false
 }

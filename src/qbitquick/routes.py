@@ -10,8 +10,8 @@ from jsonschema import ValidationError
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
 
 from qbitquick.config import CONFIG_SCHEMA, load_config
-from qbitquick.database.database_handler import clear_db, delete_torrent, get_table_data
-from qbitquick.handlers import post_race, race
+from qbitquick.database.database_handler import clear_db, delete_pause_event, get_table_data
+from qbitquick.handlers import pause, post_race, race, unpause
 from qbitquick.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,28 @@ async def post_race_route(torrent_hash: str) -> dict[str, str]:
     return {
         "status": "success",
         "message": "post race ran successfully",
+    }
+
+
+@router.post("/pause")
+@router.post("/pause/{event_id}")
+async def pause_route(event_id: str = "pause") -> dict[str, str]:
+    _, config = load_config()
+    pause(config, event_id)
+    return {
+        "status": "success",
+        "message": "torrents paused successfully",
+    }
+
+
+@router.post("/unpause")
+@router.post("/unpause/{event_id}")
+async def unpause_route(event_id: str = "pause") -> dict[str, str]:
+    _, config = load_config()
+    unpause(config, event_id)
+    return {
+        "status": "success",
+        "message": "torrents unpaused successfully",
     }
 
 
@@ -97,7 +119,7 @@ async def get_db_route(request: Request) -> HTMLResponse:
 @router.delete("/db/{torrent_hash}")
 async def delete_db_route(torrent_hash: str | None = None) -> dict[str, str]:
     if torrent_hash:
-        delete_torrent(torrent_hash)
+        delete_pause_event(torrent_hash)
         return {
             "status": "success",
             "message": f"{torrent_hash} deleted from database"

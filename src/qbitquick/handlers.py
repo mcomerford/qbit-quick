@@ -5,62 +5,73 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
+from datetime import timedelta
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
 from qbittorrentapi import Client, TorrentDictionary, TrackerStatus
-from qbittorrentapi.torrents import TorrentInfoList
 
 from qbitquick.config import TOO_MANY_REQUESTS_DELAY, UNREGISTERED_MESSAGES
-from qbitquick.database.database_handler import delete_torrent, load_all_paused_torrent_hashes, load_torrents_to_unpause, save_torrent_hashes_to_pause
+from qbitquick.database.database_handler import delete_pause_event, load_all_paused_torrent_hashes, load_torrents_to_unpause, save_torrent_hashes_to_pause
 from qbitquick.log_config.logging_config import LOGGING_CONFIG
 from qbitquick.task_manager import TaskInterrupted
-from qbitquick.utils import interruptible_sleep, is_port_in_use
+from qbitquick.utils import interruptible_sleep, is_port_in_use, parse_timedelta
 
 logger = logging.getLogger(__name__)
 
 
 def connect(config: dict[str, Any]) -> Client:
-    # Filter config to just the qBittorrent connection info
-    client_params: set[str] = {"host", "port", "username", "password"}
-    conn_info: dict[Any, Any] = {k: v for k, v in config.items() if k in client_params}
-    client: Client = Client(**conn_info)
-    client.auth_log_in()  # This just checks that the connection and login was successful
-    logger.info("Connected to qBittorrent successfully")
+    try:
+        # Filter config to just the qBittorrent connection info
+        client_params: set[str] = {"host", "port", "username", "password"}
+        conn_info: dict[Any, Any] = {k: v for k, v in config["qbittorrent"].items() if k in client_params}
+        client: Client = Client(**conn_info)
+        client.auth_log_in()  # This just checks that the connection and login was successful
+        logger.info("Connected to qBittorrent successfully")
 
-    logger.info("qBittorrent: %s", client.app.version)
-    logger.info("qBittorrent Web API: %s", client.app.webapiVersion)
-    if logger.isEnabledFor(logging.DEBUG):
-        for k, v in client.app.build_info.items():
-            logger.info("%s: %s", k, v)
+        logger.info("qBittorrent: %s", client.app.version)
+        logger.info("qBittorrent Web API: %s", client.app.webapiVersion)
+        if logger.isEnabledFor(logging.DEBUG):
+            for k, v in client.app.build_info.items():
+                logger.info("%s: %s", k, v)
 
-    return client
+        return client
+    except Exception as e:
+        raise ConnectionError("Failed to connect to qBittorrent") from e
+
+
+def disconnect(client):
+    client.auth_log_out()
+    logger.info("Logged out of qBittorrent successfully")
+
+
+def start_server(app: FastAPI, port: int) -> None:
+    logger.info("Starting server on port %d", port)
+    if is_port_in_use(port):
+        raise OSError(f"Port [{port}] already in use")
+
+    uvicorn.run(app, host="0.0.0.0", port=port, log_config=LOGGING_CONFIG)
 
 
 def race(config: dict[str, Any], racing_torrent_hash: str, stop_event: threading.Event) -> int:
     client = connect(config)
 
-    race_categories = config["race_categories"] if "race_categories" in config else []
+    racing_config = config["racing"]
+    race_categories = racing_config["race_categories"] if "race_categories" in racing_config else []
     if not race_categories:
         logger.info("No race categories are set, so all torrents are eligible for racing")
 
-    ignore_categories = config["ignore_categories"] if "ignore_categories" in config else []
-    if ignore_categories:
-        logger.info("Ignore categories %s", ignore_categories)
-
-    max_reannounce = config["max_reannounce"] if "max_reannounce" in config else None
+    max_reannounce = racing_config["max_reannounce"] if "max_reannounce" in racing_config else None
     if max_reannounce and max_reannounce > 0:
         logger.info("Maximum number of reannounce requests is set to [%d]", max_reannounce)
     else:
         max_reannounce = None
         logger.info("Maximum number of reannounce requests is set to [Unlimited]")
 
-    reannounce_frequency = config["reannounce_frequency"] if "reannounce_frequency" in config else 5.0
+    reannounce_frequency = racing_config["reannounce_frequency"] if "reannounce_frequency" in racing_config else 5.0
     logger.info("Reannounce frequency set to [%.2f] seconds", reannounce_frequency)
-
-    pausing = config["pausing"] if "pausing" in config else False
-    logger.info("Pausing of torrents before racing is [%s]", "Enabled" if pausing else "Disabled")
 
     torrents = client.torrents_info()
     racing_torrent = next((t for t in torrents if t.hash == racing_torrent_hash), None)
@@ -78,35 +89,40 @@ def race(config: dict[str, Any], racing_torrent_hash: str, stop_event: threading
             logger.info("Not racing torrent [%s], as category [%s] is not in the list of racing categories %s", racing_torrent.name, racing_torrent.category, race_categories)
             return 1
 
-    # Remove any torrents with an ignored category
-    if ignore_categories:
-        ignored_torrents = TorrentInfoList([t for t in torrents if t.category in ignore_categories])
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Ignored torrents: %s", [t.name for t in ignored_torrents])
-        logger.info("Ignoring %d torrents, as their category is one of %s", len(ignored_torrents), ignore_categories)
-        torrents = TorrentInfoList([t for t in torrents if t not in ignored_torrents])
+    pausing = True if "pausing" in racing_config else False
+    logger.info("Pausing of torrents before racing is [%s]", "Enabled" if pausing else "Disabled")
 
     torrent_hashes_to_pause = set()
     if pausing:
         logger.info("Pausing is enabled, so checking which torrents to pause")
 
-        ratio = config.get("ratio", 0)
-        logger.info("Minimum ratio to be eligible for pausing is set to [%d]", ratio)
+        ratio = racing_config["pausing"].get("ratio", 0)
+        logger.info("Minimum ratio to be eligible for pausing is set to [%g]", ratio)
 
         if race_categories:
             logger.info("Valid race categories are %s", race_categories)
         else:
             logger.info("No race categories are set, so all torrents are eligible for pausing")
 
+        ignore_categories = config["ignore_categories"] if "ignore_categories" in config else []
+        if ignore_categories:
+            logger.info("Ignore categories %s", ignore_categories)
+
         for torrent in torrents:
-            if torrent.state_enum.is_paused and torrent.hash not in load_all_paused_torrent_hashes():
-                logger.info("Ignoring torrent [%s] as it is already paused", torrent.name)
+            if torrent.category in ignore_categories:
+                logger.info("Ignoring torrent [%s], as category [%s] is ignored", torrent.name, torrent.category)
                 continue
-            if not race_categories or not torrent.category or torrent.category not in race_categories:
+            if _is_torrent_manually_paused(torrent):
+                logger.info("Ignoring torrent [%s], as it is already paused", torrent.name)
+                continue
+            if race_categories and torrent.category not in race_categories:
                 logger.info("Adding torrent [%s] to pause list, as category [%s] is not a valid race category", torrent.name, torrent.category)
                 torrent_hashes_to_pause.add(torrent.hash)
             elif torrent.ratio >= ratio:
-                logger.info("Adding torrent [%s] to pause list as ratio [%f] >= [%f]", torrent.name, torrent.ratio, ratio)
+                if torrent.state_enum.is_downloading:
+                    logger.info("Not pausing torrent [%s], as it is still downloading", torrent.name)
+                    continue
+                logger.info("Adding torrent [%s] to pause list as ratio [%g] >= [%g]", torrent.name, torrent.ratio, ratio)
                 torrent_hashes_to_pause.add(torrent.hash)
     else:
         logger.info("Pausing is disabled, so no torrents will be paused")
@@ -144,20 +160,114 @@ def race(config: dict[str, Any], racing_torrent_hash: str, stop_event: threading
 
     # Continually reannounce until the torrent is available in the tracker
     try:
-        if not reannounce_until_working(client, max_reannounce, reannounce_frequency, racing_torrent_hash, stop_event):
-            resume_torrents(client, torrent_hashes_to_pause)
+        if not _reannounce_until_working(client, max_reannounce, reannounce_frequency, racing_torrent_hash, stop_event):
+            _resume_torrents(client, torrent_hashes_to_pause)
             return 1
     except TaskInterrupted:
-        resume_torrents(client, torrent_hashes_to_pause)
+        _resume_torrents(client, torrent_hashes_to_pause)
         raise
 
     logger.info("Racing complete for torrent [%s]", racing_torrent.name)
-    client.auth_log_out()
-    logger.info("Logged out of qBittorrent successfully")
+    disconnect(client)
     return 0
 
 
-def reannounce_until_working(client: Client, max_reannounce: int | None, reannounce_frequency: float, torrent_hash: str, stop_event: threading.Event) -> bool:
+def post_race(config: dict[str, Any], torrent_hash: str) -> int:
+    client = connect(config)
+
+    torrent = _get_torrent(client, torrent_hash)
+    if not torrent:
+        logger.error("No torrent found with hash [%s], so no post race actions can be run", torrent_hash)
+        return 1
+
+    torrents_to_unpause = load_torrents_to_unpause(torrent_hash)
+    _resume_torrents(client, torrents_to_unpause)
+    if delete_pause_event(torrent_hash) > 0:
+        logger.info("Deleted pause event: %s", torrent.name)
+
+    logger.info("Post race complete for torrent [%s]", torrent.name)
+    disconnect(client)
+    return 0
+
+
+def pause(config: dict[str, Any], event_id: str) -> int:
+    client = connect(config)
+
+    torrent_hashes_to_pause = set()
+
+    time_since_active_threshold = timedelta()
+    time_active_threshold = timedelta()
+    if "pausing" in config:
+        pausing_config = config["pausing"]
+        if "time_since_active" in pausing_config:
+            time_since_active_threshold = parse_timedelta(pausing_config["time_since_active"])
+        if "time_active" in pausing_config:
+            time_active_threshold = parse_timedelta(pausing_config["time_active"])
+
+    ignore_categories = config["ignore_categories"] if "ignore_categories" in config else []
+    if ignore_categories:
+        logger.info("Ignore categories %s", ignore_categories)
+
+    torrents = client.torrents_info()
+    for torrent in torrents:
+        if _is_torrent_manually_paused(torrent):
+            logger.info("Ignoring torrent [%s], as it is already paused", torrent.name)
+            continue
+        if torrent.state_enum.is_downloading:
+            logger.info("Ignoring torrent [%s], as it's still downloading", torrent.name)
+            continue
+        if torrent.category in ignore_categories:
+            logger.info("Ignoring torrent [%s], as category [%s] is ignored", torrent.name, torrent.category)
+            continue
+        time_since_active = timedelta(seconds=(time.time() - torrent.last_activity))
+        if time_since_active >= time_since_active_threshold:
+            logger.info("Adding torrent [%s] to pause list as time since active [%s] >= [%s]", torrent.name, time_since_active, time_since_active_threshold)
+            torrent_hashes_to_pause.add(torrent.hash)
+            continue
+        time_active = timedelta(seconds=torrent.time_active)
+        if time_active >= time_active_threshold:
+            logger.info("Adding torrent [%s] to pause list as time active [%s] >= [%s]", torrent.name, time_active, time_active_threshold)
+            torrent_hashes_to_pause.add(torrent.hash)
+            continue
+
+    save_torrent_hashes_to_pause(event_id, torrent_hashes_to_pause)
+    client.torrents_pause(torrent_hashes=torrent_hashes_to_pause)
+
+    disconnect(client)
+    return 0
+
+
+def unpause(config: dict[str, Any], event_id: str) -> int:
+    client = connect(config)
+
+    torrents_to_unpause = load_torrents_to_unpause(event_id)
+    _resume_torrents(client, torrents_to_unpause)
+    if delete_pause_event(event_id) > 0:
+        logger.info("Deleted pause event: %s", event_id)
+
+    disconnect(client)
+    return 0
+
+
+def print_config(config_path: str, config: dict[str, Any]) -> int:
+    print(f"Config Path: {config_path}")
+    print(json.dumps(config, indent=2))
+    return 0
+
+
+def edit_config(config_path: str) -> int:
+    editor = os.environ.get("EDITOR", "vi")
+    if sys.platform.startswith("win") and not os.environ.get("EDITOR"):
+        editor = "notepad"
+    # noinspection PyBroadException
+    try:
+        subprocess.run([editor, config_path])
+    except Exception as e:
+        raise IOError(f"Could not open file: {config_path}") from e
+    return 0
+
+
+def _reannounce_until_working(client: Client, max_reannounce: int | None, reannounce_frequency: float, torrent_hash: str, stop_event: threading.Event) -> bool:
     reannounce_count = 0
     while not max_reannounce or reannounce_count < max_reannounce:
         torrent = _get_torrent(client, torrent_hash)
@@ -183,9 +293,9 @@ def reannounce_until_working(client: Client, max_reannounce: int | None, reannou
             logger.debug("Waiting on torrent [%s] while trackers are updating...", torrent.name)
             interruptible_sleep(reannounce_frequency, stop_event)
             continue
-        if handle_unregistered_torrent(client, torrent) or handle_too_many_requests(client, torrent, stop_event):
+        if _handle_unregistered_torrent(client, torrent) or _handle_too_many_requests(client, torrent, stop_event):
             continue
-        if reannounce(client, torrent):
+        if _reannounce(client, torrent):
             logger.info("Torrent [%s] has at least 1 working tracker", torrent.name)
             return True
         reannounce_count += 1
@@ -200,7 +310,7 @@ def reannounce_until_working(client: Client, max_reannounce: int | None, reannou
     return False
 
 
-def handle_unregistered_torrent(client: Client, torrent: TorrentDictionary) -> bool:
+def _handle_unregistered_torrent(client: Client, torrent: TorrentDictionary) -> bool:
     """
     When a new torrent is added, the tracker may state that the torrent is unregistered. In this case,
     reannouncing won't help and the torrent has to be stopped and restarted. Forcing a recheck is an
@@ -221,7 +331,7 @@ def handle_unregistered_torrent(client: Client, torrent: TorrentDictionary) -> b
     return False
 
 
-def handle_too_many_requests(client: Client, torrent: TorrentDictionary, stop_event: threading.Event) -> bool:
+def _handle_too_many_requests(client: Client, torrent: TorrentDictionary, stop_event: threading.Event) -> bool:
     """
     If too many requests are sent in a short space of time, the tracker will block any further requests.
     It's not clear what the limit it is, but this adds a fixed delay to try and give the tracker a chance to recover.
@@ -235,7 +345,7 @@ def handle_too_many_requests(client: Client, torrent: TorrentDictionary, stop_ev
     return False
 
 
-def reannounce(client: Client, torrent: TorrentDictionary) -> bool:
+def _reannounce(client: Client, torrent: TorrentDictionary) -> bool:
     if any(tracker.status == TrackerStatus.WORKING for tracker in client.torrents_trackers(torrent_hash=torrent.hash)):
         logger.info("Skipping reannounce for torrent [%s], as at least one tracker is already working", torrent.name)
         return True
@@ -251,7 +361,7 @@ def reannounce(client: Client, torrent: TorrentDictionary) -> bool:
     return any(tracker.status == TrackerStatus.WORKING for tracker in trackers)
 
 
-def resume_torrents(client: Client, paused_torrent_hashes: list[str] | set[str]) -> None:
+def _resume_torrents(client: Client, paused_torrent_hashes: list[str] | set[str]) -> None:
     if paused_torrent_hashes:
         logger.info("Resuming [%d] previously paused torrents", len(paused_torrent_hashes))
         found_paused_torrent_hashes = {t.hash for t in (client.torrents_info(torrent_hashes=paused_torrent_hashes) or [])}
@@ -263,54 +373,12 @@ def resume_torrents(client: Client, paused_torrent_hashes: list[str] | set[str])
         logger.info("No paused torrents to resume")
 
 
-def post_race(config: dict[str, Any], torrent_hash: str) -> int:
-    try:
-        client = connect(config)
-    except Exception as e:
-        raise ConnectionError("Failed to connect to qBittorrent") from e
-
-    torrent = _get_torrent(client, torrent_hash)
-    if not torrent:
-        logger.error("No torrent found with hash [%s], so no post race actions can be run", torrent_hash)
-        return 1
-
-    torrents_to_unpause = load_torrents_to_unpause(torrent_hash)
-    resume_torrents(client, torrents_to_unpause)
-    if delete_torrent(torrent_hash) > 0:
-        logger.info("Deleted torrent [%s]", torrent.name)
-
-    logger.info("Post race complete for torrent [%s]", torrent.name)
-    return 0
-
-
-def print_config(config_path: str, config: dict[str, Any]) -> int:
-    print(f"Config Path: {config_path}")
-    print(json.dumps(config, indent=2))
-    return 0
-
-
-def edit_config(config_path: str) -> int:
-    editor = os.environ.get("EDITOR", "vi")
-    if sys.platform.startswith("win") and not os.environ.get("EDITOR"):
-        editor = "notepad"
-    # noinspection PyBroadException
-    try:
-        subprocess.run([editor, config_path])
-    except Exception as e:
-        raise IOError(f"Could not open file: {config_path}") from e
-    return 0
-
-
-def start_server(app: FastAPI, port: int) -> None:
-    logger.info("Starting server on port %d", port)
-    if is_port_in_use(port):
-        raise OSError(f"Port [{port}] already in use")
-
-    uvicorn.run(app, host="0.0.0.0", port=port, log_config=LOGGING_CONFIG)
-
-
 def _get_torrent(client: Client, torrent_hash: str) -> TorrentDictionary | None:
     return next(iter(client.torrents_info(torrent_hashes=torrent_hash)), None)
+
+
+def _is_torrent_manually_paused(torrent: TorrentDictionary):
+    return torrent.state_enum.is_paused and torrent.hash not in load_all_paused_torrent_hashes()
 
 
 def _check_for_interrupt(stop_event: threading.Event, torrent_name: str) -> None:

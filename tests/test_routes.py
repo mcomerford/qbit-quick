@@ -1,19 +1,21 @@
-import json
 import threading
 import uuid
+from datetime import timedelta
 from sqlite3 import Connection, Cursor
 from typing import Any, Callable, Iterator
 from unittest.mock import ANY, MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
-from qbittorrentapi import TorrentDictionary, TorrentInfoList, TorrentState, Tracker, TrackerStatus, TrackersList
+from qbittorrentapi import TorrentDictionary, TorrentState, Tracker, TrackerStatus, TrackersList
 from starlette.status import HTTP_200_OK, HTTP_400_BAD_REQUEST
 
 from conftest import initialise_mock_db
 from qbitquick.config import TOO_MANY_REQUESTS_DELAY
+from qbitquick.database.database_handler import save_torrent_hashes_to_pause
 from qbitquick.routes import task_manager
-from test_helpers import assert_called_once_with_in_any_order, merge_and_remove
+from test_helpers import assert_called_once_with_in_any_order, calculate_last_activity_time, merge_and_remove, mock_torrents_info, print_torrents
 
 
 def test_race(mocker: MockerFixture, test_server: TestClient, mock_client_instance: MagicMock, mock_get_db_connection: tuple[Connection, Cursor],
@@ -80,13 +82,6 @@ def test_race(mocker: MockerFixture, test_server: TestClient, mock_client_instan
         },
     ])
 
-    def torrents_info_side_effect(**kwargs: dict[str, Any]) -> TorrentInfoList | None:
-        if not kwargs:
-            return TorrentInfoList(torrents)
-        if kwargs.get("torrent_hashes") == racing_torrent.hash:
-            return TorrentInfoList([racing_torrent])
-        return None
-
     def torrents_trackers_side_effect(**kwargs: dict[str, Any]) -> TrackersList | None:
         if kwargs.get("torrent_hash") == racing_torrent.hash:
             return TrackersList(trackers)
@@ -101,7 +96,7 @@ def test_race(mocker: MockerFixture, test_server: TestClient, mock_client_instan
             if torrent := hash_to_torrent.get(torrent_hash):
                 torrent.state = TorrentState.PAUSED_DOWNLOAD
 
-    mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
+    mock_torrents_info(mock_client_instance, torrents)
     mock_client_instance.torrents_trackers.side_effect = torrents_trackers_side_effect
     mock_client_instance.torrents_reannounce.side_effect = lambda **kwargs: update_tracker(working_tracker)
     mock_client_instance.torrents_recheck.side_effect = lambda **kwargs: update_tracker(working_tracker)
@@ -116,20 +111,19 @@ def test_race(mocker: MockerFixture, test_server: TestClient, mock_client_instan
 
     task_manager.join_all_threads(10.0)
 
-    # Print out the torrents, so we have all the information if an assertion fails
-    print(json.dumps(torrents))
+    print_torrents(torrents)
 
     mock_client_instance.torrents_reannounce.assert_called_once_with(torrent_hashes=racing_torrent.hash)
     # Verify recheck was called on the torrent, as the tracker reported the torrent was "unregistered"
     mock_client_instance.torrents_recheck.assert_called_once_with(torrent_hashes=racing_torrent.hash)
     # Verify pause was only called on the torrents eligible for pausing
-    assert_called_once_with_in_any_order(mock_client_instance.torrents_pause, torrent_hashes=[downloading_torrent.hash, non_racing_torrent.hash, uploading_torrent.hash, ])
+    assert_called_once_with_in_any_order(mock_client_instance.torrents_pause, torrent_hashes=[non_racing_torrent.hash, uploading_torrent.hash, ])
     # Verify the racing torrent hash was added to the database
-    cur.execute("SELECT racing_torrent_hash FROM racing_torrents")
+    cur.execute("SELECT id FROM pause_events")
     assert cur.fetchall() == [(racing_torrent.hash,)]
     # Verify all the paused torrent hashes were added to the database
-    cur.execute("SELECT paused_torrent_hash FROM paused_torrents ORDER BY paused_torrent_hash")
-    assert cur.fetchall() == sorted([(downloading_torrent.hash,), (non_racing_torrent.hash,), (uploading_torrent.hash,), ])
+    cur.execute("SELECT torrent_hash FROM paused_torrents ORDER BY torrent_hash")
+    assert cur.fetchall() == sorted([(non_racing_torrent.hash,), (uploading_torrent.hash,), ])
     # Verify the script waited for TOO_MANY_REQUESTS_DELAY seconds, as the tracker returned "too many requests"
     mock_sleep.assert_any_call(TOO_MANY_REQUESTS_DELAY, ANY)
 
@@ -140,13 +134,10 @@ def test_post_race(mocker: MockerFixture, test_server: TestClient, mock_client_i
     paused_torrent = torrent_factory(category="race", name="paused_torrent", state=TorrentState.PAUSED_DOWNLOAD, ratio=1.0, progress=0.5)
     torrents = [racing_torrent, paused_torrent]
 
-    paused_torrent_hashes = [paused_torrent.hash, "missing_torrent_hash"]
+    paused_torrent_hashes = {paused_torrent.hash, "missing_torrent_hash"}
     conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent.hash, paused_torrent_hashes)
 
-    def torrents_info_side_effect(**kwargs: dict[str, Any]) -> TorrentInfoList | None:
-        return TorrentInfoList([t for t in torrents if t.hash in kwargs["torrent_hashes"]])
-
-    mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
+    mock_torrents_info(mock_client_instance, torrents)
 
     task_uuid = str(uuid.uuid4())
     mocker.patch("qbitquick.task_manager.uuid.uuid4", return_value=uuid.UUID(task_uuid))
@@ -155,18 +146,127 @@ def test_post_race(mocker: MockerFixture, test_server: TestClient, mock_client_i
     assert response.status_code == HTTP_200_OK
     assert response.json() == {
         "status": "success",
-        "message": "post race ran successfully",
+        "message": "post race ran successfully"
     }
-
-    task_manager.join_all_threads(10.0)
 
     # Verify resume was called on the paused torrents, as it was in a NOT_WORKING state
     mock_client_instance.torrents_resume.assert_called_once_with(torrent_hashes={paused_torrent.hash})
     # Verify the racing torrent hash was removed from the database
-    cur.execute("SELECT * FROM racing_torrents")
+    cur.execute("SELECT * FROM pause_events")
     assert cur.fetchall() == []
-    # Verify the associated paused torrent hashes was removed from the database
+    # Verify the associated paused torrent hashes were removed from the database
     cur.execute("SELECT * FROM paused_torrents")
+    assert cur.fetchall() == []
+
+
+@pytest.mark.parametrize(
+    ("override_config", "with_id"),
+    [
+        pytest.param(
+            {
+                "pausing": None
+            },
+            False  # with_id
+        ),
+        pytest.param(
+            {
+                "pausing": {
+                    "time_since_active": "1d",
+                    "time_active": "1w"
+                }
+            },
+            True,  # with_id
+        )
+    ],
+    indirect=["override_config"]
+)
+def test_pause(test_server: TestClient, mock_client_instance: MagicMock, mock_get_db_connection: tuple[Connection, Cursor], torrent_factory: Callable[..., TorrentDictionary],
+               override_config: dict[str, Any], with_id: bool):
+    # Setup torrents
+    downloading_torrent = torrent_factory(category="race", name="downloading_torrent", state=TorrentState.DOWNLOADING, progress=0.5, last_activity=calculate_last_activity_time(timedelta(days=2)), time_active=timedelta(weeks=2).total_seconds())
+    ignored_torrent = torrent_factory(category="ignore", name="ignored_torrent", state=TorrentState.UPLOADING, last_activity=calculate_last_activity_time(timedelta(days=2)), time_active=timedelta(weeks=2).total_seconds())
+    app_paused_torrent = torrent_factory(category="race", name="app_paused_torrent", state=TorrentState.PAUSED_UPLOAD, last_activity=calculate_last_activity_time(timedelta(hours=1)), time_active=timedelta(days=3).total_seconds())
+    manually_paused_torrent = torrent_factory(category="race", name="manually_paused_torrent", state=TorrentState.PAUSED_UPLOAD, last_activity=calculate_last_activity_time(timedelta(hours=1)), time_active=timedelta(days=3).total_seconds())
+    new_active_uploading_torrent = torrent_factory(category="race", name="new_active_uploading_torrent", state=TorrentState.UPLOADING, last_activity=calculate_last_activity_time(timedelta(hours=1)), time_active=timedelta(days=3).total_seconds())
+    old_active_uploading_torrent = torrent_factory(category="race", name="old_active_uploading_torrent", state=TorrentState.UPLOADING, last_activity=calculate_last_activity_time(timedelta(hours=1)), time_active=timedelta(weeks=1).total_seconds())
+    inactive_uploading_torrent = torrent_factory(category="race", name="inactive_uploading_torrent", state=TorrentState.UPLOADING, last_activity=calculate_last_activity_time(timedelta(hours=1)), time_active=timedelta(weeks=1, days=1).total_seconds())
+    torrents = [downloading_torrent, ignored_torrent, app_paused_torrent, manually_paused_torrent, new_active_uploading_torrent, old_active_uploading_torrent, inactive_uploading_torrent]
+
+    conn, cur = initialise_mock_db(mock_get_db_connection, downloading_torrent.hash, {app_paused_torrent.hash})
+
+    mock_torrents_info(mock_client_instance, torrents)
+
+    if with_id:
+        event_id = str(uuid.uuid4())
+        response = test_server.post(f"/pause/{event_id}")
+    else:
+        event_id = "pause"
+        response = test_server.post(f"/pause")
+
+    assert response.status_code == HTTP_200_OK
+    assert response.json() == {
+        "status": "success",
+        "message": "torrents paused successfully"
+    }
+
+    print_torrents(torrents)
+
+    # Verify the pause event was added to the database with the specified event id
+    cur.execute(f"SELECT id FROM pause_events WHERE id = '{event_id}'")
+    assert cur.fetchall() == [(event_id,)]
+    if "pausing" in override_config:
+        # Verify only the torrents that breached the time_since_active or time_active limits were added to the database
+        assert_called_once_with_in_any_order(mock_client_instance.torrents_pause, torrent_hashes=[old_active_uploading_torrent.hash, inactive_uploading_torrent.hash, ])
+        cur.execute(f"SELECT torrent_hash FROM paused_torrents WHERE id = '{event_id}' ORDER BY torrent_hash")
+        assert cur.fetchall() == sorted([(old_active_uploading_torrent.hash,), (inactive_uploading_torrent.hash,), ])
+    else:
+        # Verify all eligible paused torrent hashes were added to the database
+        assert_called_once_with_in_any_order(mock_client_instance.torrents_pause, torrent_hashes=[
+            app_paused_torrent.hash, new_active_uploading_torrent.hash, old_active_uploading_torrent.hash, inactive_uploading_torrent.hash, ])
+        cur.execute(f"SELECT torrent_hash FROM paused_torrents WHERE id = '{event_id}' ORDER BY torrent_hash")
+        assert cur.fetchall() == sorted([(app_paused_torrent.hash,), (new_active_uploading_torrent.hash,),
+                                         (old_active_uploading_torrent.hash,), (inactive_uploading_torrent.hash,), ])
+
+
+@pytest.mark.parametrize("with_id", [False, True])
+def test_unpause(test_server: TestClient, mock_client_instance: MagicMock, mock_get_db_connection: tuple[Connection, Cursor], torrent_factory: Callable[..., TorrentDictionary],
+                 with_id: bool):
+    # Setup torrents
+    racing_torrent = torrent_factory(category="race", name="racing_torrent", state=TorrentState.DOWNLOADING)
+    paused_torrent = torrent_factory(category="race", name="paused_torrent", state=TorrentState.PAUSED_UPLOAD)
+    other_paused_torrent = torrent_factory(category="other", name="paused_torrent", state=TorrentState.PAUSED_UPLOAD)
+    ignored_torrent = torrent_factory(category="ignore", name="paused_torrent", state=TorrentState.PAUSED_UPLOAD)
+    torrents = [racing_torrent, paused_torrent, other_paused_torrent, ignored_torrent]
+
+    paused_torrents = {paused_torrent.hash, other_paused_torrent.hash}
+    conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent._torrent_hash, {paused_torrent.hash})
+
+    mock_torrents_info(mock_client_instance, torrents)
+
+    if with_id:
+        event_id = str(uuid.uuid4())
+        save_torrent_hashes_to_pause(event_id, paused_torrents)
+        response = test_server.post(f"/unpause/{event_id}")
+    else:
+        event_id = "pause"
+        save_torrent_hashes_to_pause(event_id, paused_torrents)
+        response = test_server.post(f"/unpause")
+
+    assert response.status_code == HTTP_200_OK
+    assert response.json() == {
+        "status": "success",
+        "message": "torrents unpaused successfully"
+    }
+
+    print_torrents(torrents)
+
+    # Verify resume was only called on other_paused_torrent, as paused_torrent is still paused due to racing_torrent
+    mock_client_instance.torrents_resume.assert_called_once_with(torrent_hashes={other_paused_torrent.hash})
+    # Verify the pause event was removed from the database
+    cur.execute(f"SELECT * FROM pause_events WHERE id = '{event_id}'")
+    assert cur.fetchall() == []
+    # Verify the associated paused torrent hashes were removed from the database
+    cur.execute(f"SELECT * FROM paused_torrents WHERE id = '{event_id}'")
     assert cur.fetchall() == []
 
 
@@ -209,7 +309,7 @@ def test_delete_all_entries_from_db(mock_get_db_connection: tuple[Connection, Cu
     paused_torrent1 = torrent_factory()
     paused_torrent2 = torrent_factory()
 
-    conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent.hash, [paused_torrent1.hash, paused_torrent2.hash])
+    conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent.hash, {paused_torrent1.hash, paused_torrent2.hash})
 
     response = test_server.delete("/db")
 
@@ -219,8 +319,10 @@ def test_delete_all_entries_from_db(mock_get_db_connection: tuple[Connection, Cu
             "message": "database cleared"
         }
 
-    cur.execute("SELECT * FROM racing_torrents")
+    # Verify all pause events were removed from the database
+    cur.execute("SELECT * FROM pause_events")
     assert cur.fetchall() == []
+    # Verify all paused torrent hashes were removed from the database
     cur.execute("SELECT * FROM paused_torrents")
     assert cur.fetchall() == []
 
@@ -230,18 +332,10 @@ def test_delete_one_entry_from_db(mock_get_db_connection: tuple[Connection, Curs
     racing_torrent2 = torrent_factory()
     paused_torrent1 = torrent_factory()
     paused_torrent2 = torrent_factory()
+    paused_torrent3 = torrent_factory()
 
-    conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent1.hash, [paused_torrent1.hash, paused_torrent2.hash])
-    cur.execute("BEGIN TRANSACTION")
-    cur.execute("""
-                INSERT INTO racing_torrents (racing_torrent_hash)
-                VALUES (?)
-                """, (racing_torrent2.hash,))
-    cur.executemany("""
-                    INSERT INTO paused_torrents (racing_torrent_hash, paused_torrent_hash)
-                    VALUES (?, ?)
-                    """, [(racing_torrent2.hash, paused_torrent1.hash),(racing_torrent2.hash, paused_torrent2.hash)])
-    conn.commit()
+    conn, cur = initialise_mock_db(mock_get_db_connection, racing_torrent1.hash, {paused_torrent1.hash, paused_torrent2.hash})
+    save_torrent_hashes_to_pause(racing_torrent2.hash, {paused_torrent2.hash, paused_torrent3.hash})
 
     response = test_server.delete(f"/db/{racing_torrent1.hash}")
 
@@ -251,10 +345,12 @@ def test_delete_one_entry_from_db(mock_get_db_connection: tuple[Connection, Curs
             "message": f"{racing_torrent1.hash} deleted from database"
         }
 
-    cur.execute("SELECT racing_torrent_hash FROM racing_torrents")
+    # Verify only racing_torrent2 remains in the database
+    cur.execute("SELECT id FROM pause_events")
     assert cur.fetchall() == [(racing_torrent2.hash,)]
-    cur.execute("SELECT paused_torrent_hash FROM paused_torrents ORDER BY paused_torrent_hash")
-    assert cur.fetchall() == sorted([(paused_torrent1.hash,), (paused_torrent2.hash,), ])
+    # Verify only paused_torrent2 and paused_torrent3 remain in the database
+    cur.execute("SELECT torrent_hash FROM paused_torrents ORDER BY torrent_hash")
+    assert cur.fetchall() == sorted([(paused_torrent2.hash,), (paused_torrent3.hash,), ])
 
 
 def test_list_routes(test_server: TestClient):
@@ -266,6 +362,18 @@ def test_list_routes(test_server: TestClient):
                                }, {
                                    'method': ['POST'],
                                    'path': '/post-race/{torrent_hash}'
+                               }, {
+                                   'method': ['POST'],
+                                   'path': '/pause/{event_id}'
+                               }, {
+                                   'method': ['POST'],
+                                   'path': '/pause'
+                               }, {
+                                   'method': ['POST'],
+                                   'path': '/unpause/{event_id}'
+                               }, {
+                                   'method': ['POST'],
+                                   'path': '/unpause'
                                }, {
                                    'method': ['DELETE', 'POST'],
                                    'path': '/cancel/{task_id}'
@@ -293,7 +401,7 @@ def test_list_routes(test_server: TestClient):
                                }]
 
 
-def test_get_config(test_server: TestClient, mock_config: dict[str, Any]):
+def test_get_config(test_server: TestClient, override_config: dict[str, Any]):
     response = test_server.get("/config")
     assert response.status_code == HTTP_200_OK
-    assert response.json() == mock_config
+    assert response.json() == override_config

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -19,18 +20,32 @@ def _load_config_schema() -> dict[str, Any]:
 # Constants
 APP_NAME = "qbit-quick"
 CONFIG_SCHEMA = _load_config_schema()
-DATABASE_FILENAME = "race.sqlite"
+DATABASE_FILENAME = "paused_events.sqlite"
 TOO_MANY_REQUESTS_DELAY = 10
-
-# Tracker response messages
-UNREGISTERED_MESSAGES = ["unregistered", "stream truncated"]
 
 # Environment variables
 QBQ_LOGS_DIR = "QBQ_LOGS_DIR"
 QBQ_CONFIG_DIR = "QBQ_CONFIG_DIR"
 QBQ_STATE_DIR = "QBQ_STATE_DIR"
 
+# Tracker response messages
+UNREGISTERED_MESSAGES = ["unregistered", "stream truncated"]
+
+# Regex for a duration e.g. 1w2d3h4m5s
+DURATION_RE = re.compile(
+    r"^(?:(?P<weeks>\d+)w)?"
+    r"(?:(?P<days>\d+)d)?"
+    r"(?:(?P<hours>\d+)h)?"
+    r"(?:(?P<minutes>\d+)m)?"
+    r"(?:(?P<seconds>\d+)s)?$"
+)
+
 logger = logging.getLogger(__name__)
+
+
+@FormatChecker.cls_checks("duration")
+def is_duration_format(value: str) -> bool:
+    return bool(DURATION_RE.fullmatch(value))
 
 
 def load_config() -> tuple[Path, dict[str, Any]]:

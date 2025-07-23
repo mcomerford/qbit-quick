@@ -1,5 +1,10 @@
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import Mock
+
+from qbittorrentapi import TorrentDictionary, TorrentInfoList
+
 
 def sort_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """ Recursively sort lists/dictionaries to make comparison order-agnostic. """
@@ -35,8 +40,30 @@ def merge_and_remove(original: dict[str, Any], updates: dict[str, Any]) -> None:
     Updates `original` in place by merging values from `updates`.
     If a key in `updates` has a value of None, it will be removed from `original`.
     """
+    if not updates:
+        return
     for key, value in updates.items():
         if value is None:
             original.pop(key, None)  # Remove key if it exists
+        elif isinstance(value, dict):
+            merge_and_remove(original[key], value)
         else:
             original[key] = value  # Update or add key-value pair
+
+
+def print_torrents(torrents: list[TorrentDictionary]) -> None:
+    # Print out the torrents, so we have all the information if an assertion fails
+    print(json.dumps(torrents, indent=2))
+
+
+def calculate_last_activity_time(time_since_active: timedelta) -> int:
+    return int((datetime.now(timezone.utc) - time_since_active).timestamp())
+
+
+def mock_torrents_info(mock_client_instance: Mock, torrents: list[TorrentDictionary]) -> None:
+    def _side_effect(**kwargs: dict[str, Any]) -> TorrentInfoList:
+        if kwargs:
+            return TorrentInfoList([t for t in torrents if t.hash in kwargs["torrent_hashes"]])
+        return TorrentInfoList(torrents)
+
+    mock_client_instance.torrents_info.side_effect = _side_effect

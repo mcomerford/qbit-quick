@@ -1,13 +1,22 @@
 {
-  "host": "127.0.0.1",
-  "port": 8080,
-  "username": "admin",
-  "password": "adminadmin",
-  "pausing": true,
-  "race_categories": ["race"],
+  "qbittorrent": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "username": "admin",
+    "password": "adminadmin"
+  },
   "ignore_categories": ["ignore"],
-  "ratio": 1.0,
-  "max_reannounce": 100,
-  "reannounce_frequency": 5.0,
+  "racing": {
+    "race_categories": ["race"],
+    "pausing": {
+      "ratio": 1.0
+    },
+    "max_reannounce": 100,
+    "reannounce_frequency": 5.0
+  },
+  "pausing": {
+    "time_since_active": "1d",
+    "time_active": "1w"
+  },
   "debug_logging": false
 }

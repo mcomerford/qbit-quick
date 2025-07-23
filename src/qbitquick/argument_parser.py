@@ -15,6 +15,12 @@ def build_parser() -> ArgumentParser:
     post_race_parser = subparsers.add_parser("post-race", help="run the post race steps for the provided torrent, such as resuming torrents that were previously paused")
     post_race_parser.add_argument("torrent_hash", help="hash of the torrent that has finished racing")
 
+    pause_parser = subparsers.add_parser("pause", help="pause any torrents that match the criteria specified in the config")
+    pause_parser.add_argument("--id", default="pause", help="an unique identifier for this pause event, which is needed to call unpause")
+
+    unpause_parser = subparsers.add_parser("unpause", help="unpauses any torrents that were paused using the pause command")
+    unpause_parser.add_argument("--id", default="pause", help="the id that was used when pausing the torrents")
+
     config_parser = subparsers.add_parser("config", help="perform actions related to the config")
     config_parser_group = config_parser.add_mutually_exclusive_group(required=True)
     config_parser_group.add_argument("--print", action="store_true", help="print the current config")

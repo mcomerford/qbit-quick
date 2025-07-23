@@ -6,9 +6,9 @@ import time
 
 from qbitquick.argument_parser import build_parser
 from qbitquick.config import APP_NAME, load_config
-from qbitquick.database.database_handler import clear_db, delete_torrent, print_db
+from qbitquick.database.database_handler import clear_db, delete_pause_event, print_db
 from qbitquick.error_handler import setup_uncaught_exception_handler
-from qbitquick.handlers import edit_config, post_race, print_config, race, start_server
+from qbitquick.handlers import edit_config, pause, post_race, print_config, race, start_server, unpause
 from qbitquick.log_config.fallback_logger import setup_fallback_logging
 from qbitquick.log_config.logging_config import LOGGING_CONFIG
 from qbitquick.server import create_app
@@ -40,6 +40,10 @@ def main(args: list[str] | None = None) -> int | None:
         return race(config, parsed_args.torrent_hash, stop_event)
     elif parsed_args.subparser_name == "post-race":
         return post_race(config, parsed_args.torrent_hash)
+    elif parsed_args.subparser_name == "pause":
+        return pause(config, parsed_args.id)
+    elif parsed_args.subparser_name == "unpause":
+        return unpause(config, parsed_args.id)
     elif parsed_args.subparser_name == "config":
         if parsed_args.print:
             return print_config(str(config_file_path), config)
@@ -55,7 +59,8 @@ def main(args: list[str] | None = None) -> int | None:
             else:
                 return 0
         elif parsed_args.delete:
-            return delete_torrent(parsed_args.delete)
+            return delete_pause_event(parsed_args.delete)
+
     # Shouldn't be possible to reach here, as the arg parser would fail first
     raise ValueError(f"Unknown subcommand {parsed_args.subparser_name}")
 

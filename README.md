@@ -3,6 +3,8 @@
 qbit-quick is a library of functions for qBittorrent to help with manging torrents.
 The primary function was initially to ensure you are one of the first in a swarm when a new torrent becomes available,
 although it's expanded to provide other useful functions as well now.\
+One of the main features is that it can be run in server mode. This is especially useful if you want to run it in a
+docker container, allowing other apps to interact with via HTTP calls.
 **NOTE:** I wrote this script to work with torrentleech. There's no reason it shouldn't work with other trackers, but
 it's not been tested with them.
 
@@ -45,35 +47,53 @@ override this location by setting the `QBQ_CONFIG_DIR` environment variable.
 
 ```json
 {
-  "host": "127.0.0.1",
-  "port": 8080,
-  "username": "admin",
-  "password": "adminadmin",
-  "pausing": true,
-  "race_categories": ["sonarr", "radarr"],
+  "qbittorrent": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "username": "admin",
+    "password": "adminadmin"
+  },
   "ignore_categories": ["ignore"],
-  "ratio": 1.0,
-  "max_reannounce": 100,
-  "reannounce_frequency": 5.0,
+  "racing": {
+    "race_categories": ["race"],
+    "pausing": {
+      "ratio": 1.0
+    },
+    "max_reannounce": 100,
+    "reannounce_frequency": 5.0
+  },
+  "pausing": {
+    "time_since_active": "1d",
+    "time_active": "1w"
+  },
   "debug_logging": false
 }
 ```
 
-* `host`:`str` - URL or hostname where your qBittorrent instance is running
-* `port`:`int` - Port number if using hostname:port instead of a URL
-* `username`:`str` - Username if authentication is enabled
-* `password`:`str` - Password if authentication is enabled
-* `pausing`:`bool` - Set to `true` if other torrents should be paused before racing begins. Defaults to `false` if not
-  set.
-* `race_categories`:`list[str]` - Only torrents with a category set to one in this list will be eligible for racing.
-  If not set, all torrents will be eligible for racing (except if they're in the ignore list).
+* `qbittorrent`
+  * `host`:`str` - URL or hostname where your qBittorrent instance is running
+  * `port`:`int` - Port number if using hostname:port instead of a URL
+  * `username`:`str` - Username if authentication is enabled
+  * `password`:`str` - Password if authentication is enabled
+
 * `ignore_categories`:`list[str]` - Any torrents with a category matching one in this list, will be ignored by this
   script, meaning they won't be eligible for pausing or racing.
-* `ratio`:`float` - Only torrents with a share ratio below what is set here will be eligible for pausing when another
-  torrent starts racing.
-* `max_reannounce`:`int` - The maximum number of times to reannounce before giving up. If not set, the script will
-  reannounce indefinitely until the torrent starts successfully.
-* `reannounce_frequency`:`float` - The number of seconds to wait between each reannounce. Defaults to 5.0s if not set.
+* `racing` - This section contains the settings used for racing torrents
+  * `race_categories`:`list[str]` - Only torrents with a category set to one in this list will be eligible for racing.
+    If not set, all torrents will be eligible for racing (except if they're in the ignore list).
+  * `pausing` - This section contains the criteria under which other torrents should be paused before racing begins.
+    * `ratio`:`float` - Only torrents with a share ratio below what is set here will be eligible for pausing when
+      another torrent starts racing.
+  * `max_reannounce`:`int` - The maximum number of times to reannounce before giving up. If not set, the script will
+    reannounce indefinitely until the torrent starts successfully.
+  * `reannounce_frequency`:`float` - The number of seconds to wait between each reannounce. Defaults to 5.0s if not set.
+* `pausing` - This section contains the criteria for which torrents should be paused by the `pause` command.
+  * `time_since_active`: `duration` - The duration since the torrent was last active. If `last activity > 
+    time_since_last_active`, then the torrent is eligible to be paused. This duration is in the format `1w2d3h4m5s`,
+    where `1w = 1 week`, `2d = 2 days`, `3h = 3 hours`, `4m = 4 minutes` and `5s = 5 seconds`.
+  * `time_active` - The duration that this torrent has been active for. If the `total active time > time_active`, then
+    the torrent is eligible to be paused. This duration is in the format `1w2d3h4m5s`, where `1w = 1 week`,
+    `2d = 2 days`, `3h = 3 hours`, `4m = 4 minutes` and `5s = 5 seconds`.
 * `debug_logging`:`bool` - Set to `true` to enable debug level logging. Defaults to `false` if not set.
 
 ### Reannouncing doesn't always work
@@ -139,6 +159,18 @@ will not resume a torrent if another race is in progress that would have also pa
    X, Y and Z would have also been paused by Torrent B had they not already been paused.
 4. Torrent B finishes and unpauses Torrents X, Y and Z. Torrent P remains paused.
 
+<a id="pause"/>`pause --id <id>`
+
+Pauses all torrents that match the criteria defined in the config. This is useful to allow the files to be
+moved, as that can't happen while the files are in use. The optional `--id <id>` argument allows you to set a custom id,
+e.g. `"mover"`, as this value is required to call `unpause`. If you don't provide an id, a default id of `"pause"` is
+used.
+
+<a id="unpause"/>`unpause --id <id>`
+
+Unpauses all eligible torrents that were paused using the pause command. The optional `--id <id>` argument allows you
+to pass in the id used when pausing the torrents. If you don't provide an id, a default id of `"pause"` is used.
+
 <a id="config-print"/>`config --print`
 
 Prints out the current config.
@@ -184,6 +216,20 @@ The `task_id` can be used to track or cancel the associated task.
 `[POST] http://127.0.0.1:8081/post-race/<torrent_hash>`
 
 See: [post-race](#post-race) for more details.\
+This task runs synchronously, as there would be no appropriate point to interrupt it (this is because all the torrent
+hashes are passed directly to qbittorrent in a single API call).
+
+`[POST] http://127.0.0.1:8081/pause` \
+`[POST] http://127.0.0.1:8081/pause/<id>`
+
+See: [pause](#pause) for more details.\
+This task runs synchronously, as there would be no appropriate point to interrupt it (this is because all the torrent
+hashes are passed directly to qbittorrent in a single API call).
+
+`[POST] http://127.0.0.1:8081/unpause` \
+`[POST] http://127.0.0.1:8081/unpause/<id>`
+
+See: [unpause](#unpause) for more details.\
 This task runs synchronously, as there would be no appropriate point to interrupt it (this is because all the torrent
 hashes are passed directly to qbittorrent in a single API call).
 

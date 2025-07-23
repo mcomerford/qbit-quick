@@ -53,31 +53,37 @@ def override_logging_config(monkeypatch: MonkeyPatch) -> None:
 @pytest.fixture
 def sample_config() -> dict[str, Any]:
     return {
-        "host": "localhost",
-        "port": 1234,
-        "username": "admin",
-        "password": "password",
-        "race_categories": ["race"],
+        "qbittorrent": {
+            "host": "localhost",
+            "port": 1234,
+            "username": "admin",
+            "password": "password"
+        },
         "ignore_categories": ["ignore"],
-        "pausing": True,
-        "ratio": 1.0
+        "racing": {
+            "race_categories": ["race"],
+            "pausing": {
+                "ratio": 1.0
+            }
+        },
+        "pausing": {
+            "time_since_active": "1d",
+            "time_active": "1w"
+        }
     }
 
 
-@pytest.fixture
-def override_config(sample_config: dict[str, Any], request: FixtureRequest) -> dict[str, Any]:
+@pytest.fixture(autouse=True)
+def override_config(monkeypatch: MonkeyPatch, sample_config: dict[str, Any], request: FixtureRequest) -> dict[str, Any]:
     """Fixture that merges sample_config with test-specific updates."""
     config_updates = getattr(request, "param", {})  # Get param from parametrize
     merge_and_remove(sample_config, config_updates)
-    return sample_config
 
-
-@pytest.fixture
-def mock_config(monkeypatch: MonkeyPatch, override_config: dict[str, Any]) -> dict[str, Any]:
-    mock_file_content = json.dumps(override_config)
+    mock_file_content = json.dumps(sample_config)
     mocked_open = mock_open(read_data=mock_file_content)
     monkeypatch.setattr("builtins.open", mocked_open)
-    return override_config
+
+    return sample_config
 
 
 @pytest.fixture
@@ -167,26 +173,25 @@ def run_main(monkeypatch: MonkeyPatch) -> Callable[..., int]:
     return _run
 
 
-def initialise_mock_db(mock_get_db_connection: tuple[Connection, Cursor], racing_torrent_hash: str | None = None,
-                       paused_torrent_hashes: list[str] | None = None) -> tuple[Connection, Cursor]:
+def initialise_mock_db(mock_get_db_connection: tuple[Connection, Cursor], event_id: str | None = None, paused_torrent_hashes: set[str] | None = None) -> tuple[Connection, Cursor]:
     """Create a connection to the in-memory database, create the tables and preload them with the provided data"""
     if paused_torrent_hashes is None:
-        paused_torrent_hashes = []
+        paused_torrent_hashes = set()
     conn, cur = mock_get_db_connection
 
-    ddl_file = resources.files("qbitquick") / "resources" / "race.ddl"
+    ddl_file = resources.files("qbitquick") / "resources" / "pause_events.ddl"
     with ddl_file.open("r") as f:
         cur.executescript(f.read())
-    if racing_torrent_hash and paused_torrent_hashes:
+    if event_id and paused_torrent_hashes:
         cur.execute("BEGIN TRANSACTION")
         cur.execute("""
-            INSERT INTO racing_torrents (racing_torrent_hash)
+            INSERT INTO pause_events (id)
             VALUES (?)
-        """, (racing_torrent_hash,))
+        """, (event_id,))
         cur.executemany("""
-            INSERT INTO paused_torrents (racing_torrent_hash, paused_torrent_hash)
+            INSERT INTO paused_torrents (id, torrent_hash)
             VALUES (?, ?)
-        """, [(racing_torrent_hash, paused_torrent_hash,) for paused_torrent_hash in paused_torrent_hashes])
+        """, [(event_id, paused_hash,) for paused_hash in paused_torrent_hashes])
         conn.commit()
 
     return conn, cur
