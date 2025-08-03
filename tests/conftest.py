@@ -15,8 +15,8 @@ from pytest import FixtureRequest
 from pytest import MonkeyPatch
 from pytest_mock import MockerFixture
 from qbittorrentapi import Client, TorrentDictionary, TorrentState, Tracker, TrackerStatus
+from typer.testing import CliRunner
 
-import qbitquick.main
 from qbitquick.log_config import logging_config
 from qbitquick.server import create_app
 from test_helpers import merge_and_remove
@@ -161,16 +161,8 @@ def tracker_factory() -> Callable[..., Tracker]:
 
 
 @pytest.fixture
-def run_main(monkeypatch: MonkeyPatch) -> Callable[..., int]:
-    def _run(*args):
-        monkeypatch.setattr("sys.argv", ["main", *args])
-        try:
-            exit_code = qbitquick.main.main()
-            return exit_code
-        except SystemExit as e:
-            return e.code
-
-    return _run
+def cli_runner() -> CliRunner:
+    return CliRunner()
 
 
 def initialise_mock_db(mock_get_db_connection: tuple[Connection, Cursor], event_id: str | None = None, paused_torrent_hashes: set[str] | None = None) -> tuple[Connection, Cursor]:

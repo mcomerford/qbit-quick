@@ -1,18 +1,23 @@
+import json
 import logging
 from typing import Any
 
 import jsonschema
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.routing import APIRoute, APIRouter
 from fastapi.templating import Jinja2Templates
 from jsonschema import ValidationError
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
+from qbittorrentapi.torrents import TorrentStatusesT
+from starlette.responses import Response
+from starlette.status import HTTP_200_OK, HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
 
 from qbitquick.config import CONFIG_SCHEMA, load_config
 from qbitquick.database.database_handler import clear_db, delete_pause_event, get_table_data
-from qbitquick.handlers import pause, post_race, race, unpause
+from qbitquick.formatters import OutputFormat, format_torrent_info
+from qbitquick.handlers import get_torrents_info, pause, post_race, race, unpause
 from qbitquick.task_manager import TaskManager
+from qbitquick.utils import flatten_fields
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -62,6 +67,29 @@ async def unpause_route(event_id: str = "pause") -> dict[str, str]:
     }
 
 
+# noinspection PyShadowingBuiltins,PyUnreachableCode
+@router.get("/info")
+async def get_torrents_info_route(status: TorrentStatusesT = "all", fields: list[str] | None = Query(default=None), include_field_names: bool = Query(default=False),
+                                  format: OutputFormat = Query(default=OutputFormat.json)) -> Response:
+    _, config = load_config()
+    flattened_fields = flatten_fields(fields)
+    filtered = get_torrents_info(config, status, flattened_fields)
+    formatted_output = format_torrent_info(filtered, include_field_names, format)
+
+    match format:
+        case OutputFormat.json:
+            return Response(content=formatted_output, status_code=HTTP_200_OK, media_type="application/json")
+        case OutputFormat.plain:
+            return Response(content=formatted_output, status_code=HTTP_200_OK, media_type="text/plain")
+        case _:
+            return JSONResponse(
+                status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "status": "error",
+                    "reason": f"unsupported format: {format}"
+                })
+
+
 @router.api_route("/cancel/{task_id}", methods=["DELETE", "POST"])
 async def cancel_task_route(task_id: str) -> dict[str, str]:
     logger.info("Requesting to cancel task [%s]", task_id)
@@ -96,7 +124,6 @@ async def save_config_route(request: Request) -> dict[str, str]:
 
     config_file_path, _ = load_config()
     with config_file_path.open("w") as f:
-        import json
         json.dump(data, f, indent=2)
 
     return {
@@ -108,8 +135,7 @@ async def save_config_route(request: Request) -> dict[str, str]:
 @router.get("/db", response_class=HTMLResponse)
 async def get_db_route(request: Request) -> HTMLResponse:
     headers, rows = get_table_data()
-    return templates.TemplateResponse("db_view.html", {
-        "request": request,
+    return templates.TemplateResponse(request=request, name="db_view.html", context={
         "headers": headers,
         "rows": rows,
     })

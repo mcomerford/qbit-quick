@@ -83,11 +83,11 @@
       "properties": {
         "time_since_active": {
           "type": "string",
-          "pattern": "^(?:(\\d+)w)?(?:(\\d+)d)?(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?$"
+          "format": "duration"
         },
         "time_active": {
           "type": "string",
-          "pattern": "^(?:(\\d+)w)?(?:(\\d+)d)?(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?$"
+          "format": "duration"
         }
       },
       "additionalProperties": false

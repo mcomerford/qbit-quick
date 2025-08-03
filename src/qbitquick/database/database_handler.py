@@ -9,7 +9,6 @@ from sqlite3 import Connection, Cursor
 from typing import Generator
 
 from platformdirs import user_state_dir
-from tabulate import tabulate
 
 from qbitquick.config import APP_NAME, DATABASE_FILENAME, QBQ_STATE_DIR
 
@@ -110,13 +109,6 @@ def delete_pause_event(event_id: str) -> int:
         return cur.rowcount
 
 
-def print_db() -> int:
-    logger.info("Database path: %s", db_file_path)
-    headers, table_data = get_table_data()
-    print(tabulate(table_data, headers=headers, tablefmt="grid"))
-    return 0
-
-
 def clear_db() -> int:
     with get_db_connection() as (conn, cur):
         # noinspection SqlWithoutWhere
@@ -151,15 +143,3 @@ def get_table_data() -> tuple[list[str], list[list[str]]]:
         for event_id, paused_hashes in grouped.items()
     ]
     return headers, table_data
-
-
-def _render_html_table(headers: list[str], table_data: list[str]) -> str:
-    if table_data:
-        return tabulate(table_data, headers=headers, tablefmt="html")
-    else:
-        header_html = "".join(f"<th>{header}</th>" for header in headers)
-        return f"""
-                <table>
-                    <thead><tr>{header_html}</tr></thead>
-                </table>
-                """

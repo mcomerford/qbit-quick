@@ -171,6 +171,20 @@ used.
 Unpauses all eligible torrents that were paused using the pause command. The optional `--id <id>` argument allows you
 to pass in the id used when pausing the torrents. If you don't provide an id, a default id of `"pause"` is used.
 
+<a id="info"/>`info --status <status> --field <field_name> --include-field-names --format <format>`
+
+Retrieves information about the current torrents. If no arguments are provided, then all available information is
+returned for all the torrents. This information can be filtered using the following arguments:
+* `--status` - Filter by status e.g. all, downloading, seeding. See `info --help` for the full list of accepted values.
+* `--field` - The list of fields to include in the response. Can either be specified as multiple `--field` or `-f`
+values e.g. `--field name --field size` or `-f name -f size` or as a comma-delimited list of values e.g.
+`--field name,size` or `-f name,size`.
+See [here](https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)#torrent-management) for the full
+list of accepted values.
+* `--include-field-name` - Whether to include the field names in the output. Defaults to `False` if not set.
+* `--format` - Specifies what format to return information in. Can be either `json` or `plain` where plain means
+comma-delimited plain text.
+
 <a id="config-print"/>`config --print`
 
 Prints out the current config.
@@ -232,6 +246,12 @@ hashes are passed directly to qbittorrent in a single API call).
 See: [unpause](#unpause) for more details.\
 This task runs synchronously, as there would be no appropriate point to interrupt it (this is because all the torrent
 hashes are passed directly to qbittorrent in a single API call).
+
+`[GET] http://127.0.0.1:8081/info` \
+`[GET] http://127.0.0.1:8081/info?status=<status>&fields=<field1>&fields=<field2>&format=<format>&include_field_names=<true|false>`
+
+See: [info](#info) for more details.\
+Returns information about the current torrents. The filters can be applied by providing them as HTTP request parameters.
 
 `[DELETE|POST] http://127.0.0.1:8081/cancel/<task_id>`
 

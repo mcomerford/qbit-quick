@@ -40,10 +40,12 @@ DURATION_RE = re.compile(
     r"(?:(?P<seconds>\d+)s)?$"
 )
 
+format_checker = FormatChecker()
+
 logger = logging.getLogger(__name__)
 
 
-@FormatChecker.cls_checks("duration")
+@format_checker.checks("duration")
 def is_duration_format(value: str) -> bool:
     return bool(DURATION_RE.fullmatch(value))
 
@@ -66,11 +68,11 @@ def load_config() -> tuple[Path, dict[str, Any]]:
         try:
             config = json.loads(f.read())
         except json.decoder.JSONDecodeError as e:
-            raise ValueError("Failed to load config.json") from e
+            raise ValueError(f"Failed to load config.json: {e}") from e
         logger.debug("Loaded config: %s", config)
 
     try:
-        jsonschema.validate(instance=config, schema=CONFIG_SCHEMA, format_checker=FormatChecker())
+        jsonschema.validate(instance=config, schema=CONFIG_SCHEMA, format_checker=format_checker)
     except ValidationError as e:
         raise ValueError(f"Invalid config: {e.message}") from e
 

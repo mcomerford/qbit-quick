@@ -1,4 +1,3 @@
-import json
 import logging.config
 import os
 import sqlite3
@@ -12,6 +11,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 from qbittorrentapi import Client, TorrentDictionary, TrackerStatus
+from qbittorrentapi.torrents import TorrentStatusesT
 
 from qbitquick.config import TOO_MANY_REQUESTS_DELAY, UNREGISTERED_MESSAGES
 from qbitquick.database.database_handler import delete_pause_event, load_all_paused_torrent_hashes, load_torrents_to_unpause, save_torrent_hashes_to_pause
@@ -249,10 +249,15 @@ def unpause(config: dict[str, Any], event_id: str) -> int:
     return 0
 
 
-def print_config(config_path: str, config: dict[str, Any]) -> int:
-    print(f"Config Path: {config_path}")
-    print(json.dumps(config, indent=2))
-    return 0
+def get_torrents_info(config: dict[str, Any], status: TorrentStatusesT = "all", fields: list[str] | None = None,) -> list[dict[str, Any]]:
+    client = connect(config)
+    torrent_dicts = [dict(t) for t in (client.torrents_info(status))]
+    disconnect(client)
+
+    if fields:
+        return [{key: t.get(key, "") for key in fields} for t in torrent_dicts]
+    else:
+        return torrent_dicts
 
 
 def edit_config(config_path: str) -> int:

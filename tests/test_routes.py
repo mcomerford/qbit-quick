@@ -1,15 +1,20 @@
+import json
+import os
 import threading
 import uuid
 from datetime import timedelta
+from pathlib import Path
 from sqlite3 import Connection, Cursor
 from typing import Any, Callable, Iterator
-from unittest.mock import ANY, MagicMock
+from unittest.mock import ANY, MagicMock, mock_open, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 from pytest_mock import MockerFixture
-from qbittorrentapi import TorrentDictionary, TorrentState, Tracker, TrackerStatus, TrackersList
+from qbittorrentapi import TorrentDictionary, TorrentInfoList, TorrentState, Tracker, TrackerStatus, TrackersList
 from starlette.status import HTTP_200_OK, HTTP_400_BAD_REQUEST
+from starlette.templating import Jinja2Templates
 
 from conftest import initialise_mock_db
 from qbitquick.config import TOO_MANY_REQUESTS_DELAY
@@ -129,7 +134,7 @@ def test_race(mocker: MockerFixture, test_server: TestClient, mock_client_instan
 
 
 def test_post_race(mocker: MockerFixture, test_server: TestClient, mock_client_instance: MagicMock, mock_get_db_connection: tuple[Connection, Cursor],
-                   torrent_factory: Callable[..., TorrentDictionary], run_main: Callable[..., int]):
+                   torrent_factory: Callable[..., TorrentDictionary]):
     racing_torrent = torrent_factory(category="race", name="racing_torrent")
     paused_torrent = torrent_factory(category="race", name="paused_torrent", state=TorrentState.PAUSED_DOWNLOAD, ratio=1.0, progress=0.5)
     torrents = [racing_torrent, paused_torrent]
@@ -270,6 +275,98 @@ def test_unpause(test_server: TestClient, mock_client_instance: MagicMock, mock_
     assert cur.fetchall() == []
 
 
+@pytest.mark.parametrize(
+    ("status", "include_field_names", "fields", "format"),
+    [
+        pytest.param(
+            "all",
+            True,
+            None,  # None means include all fields
+            "json"
+        ),
+        pytest.param(
+            "paused",
+            False,
+            ["name", "state,ratio"],
+            "json"
+        ),
+        pytest.param(
+            "all",
+            True,
+            None,  # None means include all fields
+            "plain"
+        ),
+        pytest.param(
+            "paused",
+            False,
+            ["name", "state,ratio"],
+            "plain"
+        ),
+    ]
+)
+def test_info(test_server: TestClient, mock_client_instance: MagicMock, mock_get_db_connection: tuple[Connection, Cursor], torrent_factory: Callable[..., TorrentDictionary],
+              status: str, include_field_names: bool, fields: list[str] | None, format: str):
+    # Setup torrents
+    racing_torrent = torrent_factory(name="racing_torrent", state=TorrentState.CHECKING_DOWNLOAD)
+    downloading_torrent = torrent_factory(name="downloading_torrent", state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5)
+    ignored_torrent = torrent_factory(name="ignored_torrent", state=TorrentState.UPLOADING, ratio=1.0, progress=1.0)
+    non_racing_torrent = torrent_factory(name="non_racing_torrent", state=TorrentState.DOWNLOADING, progress=0.5)
+    app_paused_torrent = torrent_factory(name="app_paused_torrent", state=TorrentState.PAUSED_UPLOAD, ratio=1.0)
+    manually_paused_torrent = torrent_factory(name="manually_paused_torrent", state=TorrentState.PAUSED_UPLOAD, ratio=1.0)
+    uploading_torrent = torrent_factory(name="uploading_torrent", state=TorrentState.UPLOADING, ratio=2.0, progress=1.0)
+    torrents = [racing_torrent, non_racing_torrent, downloading_torrent, uploading_torrent, app_paused_torrent, manually_paused_torrent, ignored_torrent]
+
+    def torrents_info_side_effect(*args: list[str], **_kwargs: dict[str, Any]) -> TorrentInfoList | None:
+        if args:
+            match args[0]:
+                case "paused":
+                    return TorrentInfoList([t for t in torrents if t.state_enum.is_paused])
+        return TorrentInfoList(torrents)
+
+    mock_client_instance.torrents_info.side_effect = torrents_info_side_effect
+
+    params: dict[str, Any] = {
+        "status": status,
+        "format": format
+    }
+    if include_field_names:
+        params["include_field_names"] = True
+    if fields:
+        params["fields"] = fields
+    response = test_server.get("/info", params=params)
+
+    print_torrents(torrents)
+
+    assert response.status_code == HTTP_200_OK
+
+    if format == "json":
+        if include_field_names:
+            assert response.json() == torrents
+        else:
+            expected = [
+                [app_paused_torrent["name"], app_paused_torrent["state"], app_paused_torrent["ratio"]],
+                [manually_paused_torrent["name"], manually_paused_torrent["state"], manually_paused_torrent["ratio"]]
+            ]
+            assert response.json() == expected
+    elif format == "plain":
+        if include_field_names:
+            assert response.text == (
+                    "category,hash,name,progress,ratio,state" + os.linesep +
+                    f"race,{racing_torrent.hash},racing_torrent,0,0,TorrentState.CHECKING_DOWNLOAD" + os.linesep +
+                    f"race,{non_racing_torrent.hash},non_racing_torrent,0.5,0,TorrentState.DOWNLOADING" + os.linesep +
+                    f"race,{downloading_torrent.hash},downloading_torrent,0.5,1.0,TorrentState.DOWNLOADING" + os.linesep +
+                    f"race,{uploading_torrent.hash},uploading_torrent,1.0,2.0,TorrentState.UPLOADING" + os.linesep +
+                    f"race,{app_paused_torrent.hash},app_paused_torrent,0,1.0,TorrentState.PAUSED_UPLOAD" + os.linesep +
+                    f"race,{manually_paused_torrent.hash},manually_paused_torrent,0,1.0,TorrentState.PAUSED_UPLOAD" + os.linesep +
+                    f"race,{ignored_torrent.hash},ignored_torrent,1.0,1.0,TorrentState.UPLOADING"
+            )
+        else:
+            assert response.text == (
+                    "app_paused_torrent,TorrentState.PAUSED_UPLOAD,1.0" + os.linesep +
+                    "manually_paused_torrent,TorrentState.PAUSED_UPLOAD,1.0"
+            )
+
+
 def test_get_running_tasks(test_server: TestClient):
     # Start an interruptable wait
     task_id1 = task_manager.start_task(lambda stop_event: stop_event.wait(), task_name="task1")
@@ -375,6 +472,9 @@ def test_list_routes(test_server: TestClient):
                                    'method': ['POST'],
                                    'path': '/unpause'
                                }, {
+                                   'method': ['GET'],
+                                   'path': '/info'
+                               }, {
                                    'method': ['DELETE', 'POST'],
                                    'path': '/cancel/{task_id}'
                                }, {
@@ -405,3 +505,49 @@ def test_get_config(test_server: TestClient, override_config: dict[str, Any]):
     response = test_server.get("/config")
     assert response.status_code == HTTP_200_OK
     assert response.json() == override_config
+
+
+def test_get_db(monkeypatch: MonkeyPatch, mock_get_db_connection: tuple[Connection, Cursor], test_server: TestClient, torrent_factory: Callable[..., TorrentDictionary]):
+    templates = Jinja2Templates(directory=Path(__file__).parent.parent / "templates")
+    monkeypatch.setattr("qbitquick.routes.templates", templates)
+
+    racing_torrent = torrent_factory()
+    paused_torrent1 = torrent_factory()
+    paused_torrent2 = torrent_factory()
+
+    initialise_mock_db(mock_get_db_connection, racing_torrent.hash, {paused_torrent1.hash, paused_torrent2.hash})
+
+    response = test_server.get("/db")
+
+    assert response.status_code == HTTP_200_OK
+
+    context = response.context  # type: ignore
+
+    assert context["headers"] == ["pause_event_id", "paused_torrent_hashes"]
+    sorted_paused_torrent_hashes = sorted([paused_torrent1.hash, paused_torrent2.hash])
+    assert context["rows"] == [
+        [racing_torrent.hash, os.linesep.join(sorted_paused_torrent_hashes)]
+    ]
+
+
+def test_save_config(mocker: MockerFixture, sample_config: dict[str, Any], mock_config_path: Path, mock_get_db_connection: tuple[Connection, Cursor], test_server: TestClient,
+                     torrent_factory: Callable[..., TorrentDictionary]):
+    new_config = sample_config.copy()
+    new_config["ignore_categories"] = ["ignore1", "ignore2"]
+
+    mocker.patch("pathlib.Path.exists", return_value=True)
+
+    mock_file = mock_open(read_data=json.dumps(sample_config))
+    with patch("builtins.open", mock_file), patch("qbitquick.config.Path.open", mock_file):
+        response = test_server.post("/config", json=new_config)
+
+        assert response.status_code == HTTP_200_OK
+        assert response.json() == {
+            "status": "success",
+            "message": f"config successfully saved to: {mock_config_path / "config.json"}",
+        }
+
+        mock_file.assert_any_call("w")
+        handle = mock_file()
+        written = "".join(call.args[0] for call in handle.write.call_args_list)
+        assert written == json.dumps(new_config, indent=2)

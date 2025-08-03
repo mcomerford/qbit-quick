@@ -36,3 +36,9 @@ def parse_timedelta(timedelta_str: str) -> timedelta:
         for key, value in match.groupdict().items()
     }
     return timedelta(**time_parts)
+
+
+def flatten_fields(fields: list[str] | None) -> list[str] | None:
+    if not fields:
+        return None
+    return [f.strip() for part in fields for f in part.split(",") if f.strip()]
