@@ -11,7 +11,7 @@ import typer
 from qbittorrentapi.torrents import TorrentStatusesT
 from tabulate import tabulate  # type: ignore
 
-from qbitquick.config import APP_NAME, load_config
+from qbitquick.config import APP_NAME, load_config, update_log_level
 from qbitquick.database.database_handler import clear_db, db_file_path, delete_pause_event, get_table_data
 from qbitquick.formatters import OutputFormat, format_torrent_info
 from qbitquick.handlers import edit_config, get_torrents_info, pause, post_race, race, start_server, unpause
@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 app = typer.Typer(name=APP_NAME, no_args_is_help=True)
 stop_event = threading.Event()
 
+VERBOSITY_MAP = {
+    0: logging.ERROR,  # default if no -v
+    1: logging.INFO,   # -v
+    2: logging.DEBUG,  # -vv
+}
+
 
 def _setup_cli_shutdown_hook() -> None:
     def handle_sigint(_sig, _frame):
@@ -31,6 +37,20 @@ def _setup_cli_shutdown_hook() -> None:
         sys.exit(1)
 
     signal.signal(signal.SIGINT, handle_sigint)
+
+
+@app.callback()
+def main(
+    verbose: int = typer.Option(
+        0,
+        "--verbose",
+         "-v",
+        count=True,
+        help="Increase verbosity (-v, -vv).",
+    ),
+):
+    console_level = VERBOSITY_MAP.get(verbose, logging.DEBUG) ## Default to debug if more than -vv is used
+    update_log_level("console", console_level)
 
 
 @app.command("server", help="Run in server mode")

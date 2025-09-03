@@ -24,12 +24,23 @@ log_error() {
 log_info "Building wheel with Poetry..."
 poetry build
 
-log_info "Checking wheel exists..."
-WHEEL_FILE=$(ls dist/*.whl | head -n1 || true)
-if [[ -z "$WHEEL_FILE" ]]; then
-  log_error "Wheel not found in dist/. Aborting."
-  exit 1
+log_info "Extracting version from pyproject.toml using Poetry..."
+VERSION=$(poetry version -s)
+if [[ -z "$VERSION" ]]; then
+    log_error "Failed to extract version from pyproject.toml"
+    exit 1
 fi
+log_success "Version detected: $VERSION"
+
+log_info "Checking wheel exists for version $VERSION..."
+PKG_NAME=$(poetry version | awk '{print $1}')
+WHEEL_FILE="dist/${PKG_NAME//-/_}-$VERSION-py3-none-any.whl"
+
+if [[ ! -f "$WHEEL_FILE" ]]; then
+    log_error "Expected wheel not found: $WHEEL_FILE"
+    exit 1
+fi
+log_success "Wheel found: $WHEEL_FILE"
 
 log_info "Checking if Docker is running..."
 if ! docker info >/dev/null 2>&1; then
@@ -46,16 +57,12 @@ if ! grep -q "https://index.docker.io/v1/" ~/.docker/config.json 2>/dev/null; th
 fi
 log_success "Docker authentication confirmed."
 
-log_info "Extracting version from pyproject.toml using Poetry..."
-VERSION=$(poetry version -s)
-if [[ -z "$VERSION" ]]; then
-    log_error "Failed to extract version from pyproject.toml"
-    exit 1
-fi
-log_success "Version detected: $VERSION"
-
 log_info "Building Docker image: $DOCKER_REPO:$VERSION..."
-docker build --build-arg WHEEL_FILE="$(basename "$WHEEL_FILE")" -t "$DOCKER_REPO:$VERSION" -t "$DOCKER_REPO:latest" .
+docker build \
+    --build-arg WHEEL_FILE="$(basename "$WHEEL_FILE")" \
+    -t "$DOCKER_REPO:$VERSION" \
+    -t "$DOCKER_REPO:latest" .
+
 log_success "Docker image built and tagged."
 
 log_info "Pushing Docker image: $DOCKER_REPO:$VERSION"

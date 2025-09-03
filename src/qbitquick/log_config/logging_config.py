@@ -16,14 +16,17 @@ LOGGING_CONFIG = {
         "default": {
             "format": "%(asctime)s.%(msecs)03d %(threadName)s [%(levelname)s] %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S"
+        },
+        "simple": {
+            "format": "%(levelname)s: %(message)s"
         }
     },
     "handlers": {
         "console": {
-            "level": "INFO",
+            "level": "ERROR",
             "class": "logging.StreamHandler",
-            "formatter": "default",
-            "stream": "ext://sys.stdout"
+            "formatter": "simple",
+            "stream": "ext://sys.stderr"
         },
         "file": {
             "level": "INFO",
@@ -35,25 +38,8 @@ LOGGING_CONFIG = {
         }
     },
     "root": {
-        "level": "INFO",
+        "level": "DEBUG",
         "handlers": ["console", "file"]
-    },
-    "loggers": {
-        "uvicorn": {
-            "level": "INFO",
-            "handlers": ["console", "file"],
-            "propagate": False
-        },
-        "uvicorn.error": {
-            "level": "INFO",
-            "handlers": ["console", "file"],
-            "propagate": False
-        },
-        "uvicorn.access": {
-            "level": "INFO",
-            "handlers": ["console", "file"],
-            "propagate": False
-        }
     }
 }
 

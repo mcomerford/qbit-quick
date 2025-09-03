@@ -77,14 +77,14 @@ def load_config() -> tuple[Path, dict[str, Any]]:
         raise ValueError(f"Invalid config: {e.message}") from e
 
     debug_logging = config["debug_logging"] if "debug_logging" in config else False
-    _update_log_level(debug_logging)
+    if debug_logging:
+        update_log_level("file", logging.DEBUG)
     logger.info("DEBUG level logging %s", "enabled" if debug_logging else "disabled")
     return config_file_path, config
 
 
-def _update_log_level(debug_enabled: bool) -> None:
-    level = logging.DEBUG if debug_enabled else logging.INFO
-    logging.getLogger().setLevel(level)
-
+def update_log_level(handler_name: str, level: int | str) -> None:
     for handler in logging.getLogger().handlers:
-        handler.setLevel(level)
+        if handler.get_name() == handler_name:
+            handler.setLevel(level)
+            break
