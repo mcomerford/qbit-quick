@@ -99,9 +99,9 @@ def info_cmd(
         fields: Annotated[
             list[str] | None,
             typer.Option(
-                "--field",
+                "--fields",
                 "-f",
-                help="Fields to include. Accepts '-f name -f size' or '--field name,size'",
+                help="Fields to include. Accepts '-f name -f size' or '--fields name,size'",
                 show_default="all",
             )] = None,
         include_field_names: Annotated[

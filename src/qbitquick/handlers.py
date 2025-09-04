@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from datetime import timedelta
+from pathlib import PurePath
 from typing import Any
 
 import uvicorn
@@ -251,7 +252,20 @@ def unpause(config: dict[str, Any], event_id: str) -> int:
 
 def get_torrents_info(config: dict[str, Any], status: TorrentStatusesT = "all", fields: list[str] | None = None,) -> list[dict[str, Any]]:
     client = connect(config)
+
     torrent_dicts = [dict(t) for t in (client.torrents_info(status))]
+
+    mount_mappings = config["qbittorrent"].get("mount_mappings", {})
+    for torrent_dict in torrent_dicts:
+        content_path = str(torrent_dict.get("content_path"))
+        if content_path:
+            path = PurePath(content_path)
+            for container_path, host_path in mount_mappings.items():
+                container_path_parts = PurePath(container_path).parts
+                if path.parts[:len(container_path_parts)] == container_path_parts:
+                    torrent_dict["content_path"] = str(PurePath(host_path, *path.parts[len(container_path_parts):]))
+                    break
+
     disconnect(client)
 
     if fields:

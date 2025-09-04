@@ -3,7 +3,10 @@
     "host": "127.0.0.1",
     "port": 8080,
     "username": "admin",
-    "password": "adminadmin"
+    "password": "adminadmin",
+    "mount_mappings": {
+      "/downloads": "/mnt/user/downloads"
+    }
   },
   "ignore_categories": ["ignore"],
   "racing": {

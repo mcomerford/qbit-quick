@@ -1,9 +1,10 @@
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path, PurePath
 from sqlite3 import Connection, Cursor
 from typing import Any, Callable, Iterator
 from unittest.mock import ANY, MagicMock, mock_open, patch
@@ -306,14 +307,18 @@ def test_unpause(test_server: TestClient, mock_client_instance: MagicMock, mock_
 )
 def test_info(test_server: TestClient, mock_client_instance: MagicMock, mock_get_db_connection: tuple[Connection, Cursor], torrent_factory: Callable[..., TorrentDictionary],
               status: str, include_field_names: bool, fields: list[str] | None, format: str):
+    host_path = str(PurePath("/mock/host_path"))
+    container_path = str(PurePath("/mock/container_path"))
+    container_path2 = str(PurePath("/mock/container_path2"))
+
     # Setup torrents
-    racing_torrent = torrent_factory(name="racing_torrent", state=TorrentState.CHECKING_DOWNLOAD)
-    downloading_torrent = torrent_factory(name="downloading_torrent", state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5)
-    ignored_torrent = torrent_factory(name="ignored_torrent", state=TorrentState.UPLOADING, ratio=1.0, progress=1.0)
-    non_racing_torrent = torrent_factory(name="non_racing_torrent", state=TorrentState.DOWNLOADING, progress=0.5)
-    app_paused_torrent = torrent_factory(name="app_paused_torrent", state=TorrentState.PAUSED_UPLOAD, ratio=1.0)
-    manually_paused_torrent = torrent_factory(name="manually_paused_torrent", state=TorrentState.PAUSED_UPLOAD, ratio=1.0)
-    uploading_torrent = torrent_factory(name="uploading_torrent", state=TorrentState.UPLOADING, ratio=2.0, progress=1.0)
+    racing_torrent = torrent_factory(name="racing_torrent", content_path=container_path, state=TorrentState.CHECKING_DOWNLOAD)
+    downloading_torrent = torrent_factory(name="downloading_torrent", content_path=container_path2, state=TorrentState.DOWNLOADING, ratio=1.0, progress=0.5)
+    ignored_torrent = torrent_factory(name="ignored_torrent", content_path=container_path, state=TorrentState.UPLOADING, ratio=1.0, progress=1.0)
+    non_racing_torrent = torrent_factory(name="non_racing_torrent", content_path=container_path, state=TorrentState.DOWNLOADING, progress=0.5)
+    app_paused_torrent = torrent_factory(name="app_paused_torrent", content_path=container_path, state=TorrentState.PAUSED_UPLOAD, ratio=1.0)
+    manually_paused_torrent = torrent_factory(name="manually_paused_torrent", content_path=container_path, state=TorrentState.PAUSED_UPLOAD, ratio=1.0)
+    uploading_torrent = torrent_factory(name="uploading_torrent", content_path=container_path, state=TorrentState.UPLOADING, ratio=2.0, progress=1.0)
     torrents = [racing_torrent, non_racing_torrent, downloading_torrent, uploading_torrent, app_paused_torrent, manually_paused_torrent, ignored_torrent]
 
     def torrents_info_side_effect(*args: list[str], **_kwargs: dict[str, Any]) -> TorrentInfoList | None:
@@ -341,7 +346,8 @@ def test_info(test_server: TestClient, mock_client_instance: MagicMock, mock_get
 
     if format == "json":
         if include_field_names:
-            assert response.json() == torrents
+            expected_json = re.sub(r"\bcontainer_path\b", "host_path", json.dumps(torrents))
+            assert response.json() == json.loads(expected_json)
         else:
             expected = [
                 [app_paused_torrent["name"], app_paused_torrent["state"], app_paused_torrent["ratio"]],
@@ -351,14 +357,14 @@ def test_info(test_server: TestClient, mock_client_instance: MagicMock, mock_get
     elif format == "plain":
         if include_field_names:
             assert response.text == (
-                    "category,hash,name,progress,ratio,state" + os.linesep +
-                    f"race,{racing_torrent.hash},racing_torrent,0,0,TorrentState.CHECKING_DOWNLOAD" + os.linesep +
-                    f"race,{non_racing_torrent.hash},non_racing_torrent,0.5,0,TorrentState.DOWNLOADING" + os.linesep +
-                    f"race,{downloading_torrent.hash},downloading_torrent,0.5,1.0,TorrentState.DOWNLOADING" + os.linesep +
-                    f"race,{uploading_torrent.hash},uploading_torrent,1.0,2.0,TorrentState.UPLOADING" + os.linesep +
-                    f"race,{app_paused_torrent.hash},app_paused_torrent,0,1.0,TorrentState.PAUSED_UPLOAD" + os.linesep +
-                    f"race,{manually_paused_torrent.hash},manually_paused_torrent,0,1.0,TorrentState.PAUSED_UPLOAD" + os.linesep +
-                    f"race,{ignored_torrent.hash},ignored_torrent,1.0,1.0,TorrentState.UPLOADING"
+                    "category,content_path,hash,name,progress,ratio,state" + os.linesep +
+                    f"race,{host_path},{racing_torrent.hash},racing_torrent,0,0,TorrentState.CHECKING_DOWNLOAD" + os.linesep +
+                    f"race,{host_path},{non_racing_torrent.hash},non_racing_torrent,0.5,0,TorrentState.DOWNLOADING" + os.linesep +
+                    f"race,{container_path2},{downloading_torrent.hash},downloading_torrent,0.5,1.0,TorrentState.DOWNLOADING" + os.linesep +
+                    f"race,{host_path},{uploading_torrent.hash},uploading_torrent,1.0,2.0,TorrentState.UPLOADING" + os.linesep +
+                    f"race,{host_path},{app_paused_torrent.hash},app_paused_torrent,0,1.0,TorrentState.PAUSED_UPLOAD" + os.linesep +
+                    f"race,{host_path},{manually_paused_torrent.hash},manually_paused_torrent,0,1.0,TorrentState.PAUSED_UPLOAD" + os.linesep +
+                    f"race,{host_path},{ignored_torrent.hash},ignored_torrent,1.0,1.0,TorrentState.UPLOADING"
             )
         else:
             assert response.text == (

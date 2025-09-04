@@ -75,6 +75,9 @@ override this location by setting the `QBQ_CONFIG_DIR` environment variable.
   * `port`:`int` - Port number if using hostname:port instead of a URL
   * `username`:`str` - Username if authentication is enabled
   * `password`:`str` - Password if authentication is enabled
+  * `mount_mappings`:`dict[str, str]` - If qBittorrent is running in a docker container, it will likely have a mounted
+    path, which is different from the host's path. This allows you to map the container's path back to the host's path,
+    so that when `qbit-quick info` is called, the `content_path` returned is an absolute path.
 
 * `ignore_categories`:`list[str]` - Any torrents with a category matching one in this list, will be ignored by this
   script, meaning they won't be eligible for pausing or racing.
@@ -118,6 +121,7 @@ based on which messages I've seen.
       output to a file. For example:
       ```bash
       #!/bin/bash
+      
       export QBQ_LOGS_DIR="/home/user/qbit-quick/logs"
       export QBQ_CONFIG_DIR="/home/user/qbit-quick/config"
       export QBQ_STATE_DIR="/home/user/qbit-quick/state"
@@ -130,6 +134,7 @@ based on which messages I've seen.
       output to a file. For example:
       ```bash
       #!/bin/bash
+      
       export QBQ_LOGS_DIR="/home/user/qbit-quick/logs"
       export QBQ_CONFIG_DIR="/home/user/qbit-quick/config"
       export QBQ_STATE_DIR="/home/user/qbit-quick/state"
@@ -138,12 +143,16 @@ based on which messages I've seen.
 
 ### CLI Commands
 
+---
+
 <a id="race"/>`race <torrent_hash>`
 
 When a torrent starts racing, it starts by pausing all other torrents that match the criteria (assuming pausing is
 enabled). This list of paused torrents is stored in a SQLite database so that they can be resumed afterwards.
 The script then continually restarts the torrent or reannounces to the tracker until at least 1 of the trackers is
 connected successfully or until it's reaches one of the preconfigured limits.
+
+---
 
 <a id="post-race"/>`post-race <torrent_hash>`
 
@@ -159,6 +168,8 @@ will not resume a torrent if another race is in progress that would have also pa
    X, Y and Z would have also been paused by Torrent B had they not already been paused.
 4. Torrent B finishes and unpauses Torrents X, Y and Z. Torrent P remains paused.
 
+---
+
 <a id="pause"/>`pause --id <id>`
 
 Pauses all torrents that match the criteria defined in the config. This is useful to allow the files to be
@@ -166,44 +177,83 @@ moved, as that can't happen while the files are in use. The optional `--id <id>`
 e.g. `"mover"`, as this value is required to call `unpause`. If you don't provide an id, a default id of `"pause"` is
 used.
 
+---
+
 <a id="unpause"/>`unpause --id <id>`
 
 Unpauses all eligible torrents that were paused using the pause command. The optional `--id <id>` argument allows you
 to pass in the id used when pausing the torrents. If you don't provide an id, a default id of `"pause"` is used.
+
+---
 
 <a id="info"/>`info --status <status> --field <field_name> --include-field-names --format <format>`
 
 Retrieves information about the current torrents. If no arguments are provided, then all available information is
 returned for all the torrents. This information can be filtered using the following arguments:
 * `--status` - Filter by status e.g. all, downloading, seeding. See `info --help` for the full list of accepted values.
-* `--field` - The list of fields to include in the response. Can either be specified as multiple `--field` or `-f`
-values e.g. `--field name --field size` or `-f name -f size` or as a comma-delimited list of values e.g.
-`--field name,size` or `-f name,size`.
+* `--fields` - The list of fields to include in the response. Can either be specified as multiple `--fields` or `-f`
+values e.g. `--fields name --fields size` or `-f name -f size` or as a comma-delimited list of values e.g.
+`--fields name,size` or `-f name,size`.
 See [here](https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)#torrent-management) for the full
 list of accepted values.
 * `--include-field-name` - Whether to include the field names in the output. Defaults to `False` if not set.
 * `--format` - Specifies what format to return information in. Can be either `json` or `plain` where plain means
 comma-delimited plain text.
 
+This command is especially useful if you're running an Unraid server with the [CA Mover Tuner plugin](https://github.com/masterwishx/ca.mover.tuning),
+as it allows you output a list of files based on the configured criteria. This file can then be passed into the mover
+tuner plugin as the list of files for it to ignore. For example, you might have a bash script with something like this
+in it, which would be set in the plugin to run before the mover runs:
+```bash
+#!/bin/bash
+
+# This will pause all torrents that meet the configure criteria (in config.json) using the ID "mover" (which is used to unpause later)
+curl -X POST http://tower:8081/pause/mover
+# This will output to a file a list of filenames of all the torrents still running, so the mover won't touch them
+curl -s "http://tower:8081/info?status=running&fields=content_path&format=plain" -o /mnt/user/mover/ignored.txt
+```
+For this to work, it's important you set the `mount_mappings` in the config.json so that the filenames output to the
+file are absolute paths, not paths relative to the container e.g. `/downloads` &rarr; `/mnt/user/downloads`
+
+You would then have an equivalent bash script that is set in the plugin to run after the mover has finished:
+```bash
+#!/bin/bash
+
+# This will unpause all the torrents that where paused using the "mover" ID
+curl -X POST http://tower:8081/unpause/mover
+```
+
+---
+
 <a id="config-print"/>`config --print`
 
 Prints out the current config.
+
+---
 
 `config --edit`
 
 Opens the current config in the default editor.
 
+---
+
 `db --print`
 
 Prints out the contents of the SQLite database in a tabulated ascii format.
+
+---
 
 `db --clear`
 
 Clears all entries from the SQLite database. This could be useful if it's got into a bad/messy state for some reason.
 
+---
+
 `db --delete torrent_hash`
 
 Deletes the specified torrent has from the SQLite database.
+
+---
 
 `server`
 
@@ -212,6 +262,8 @@ app to remain running and commands can be triggered via the HTTP interface.\
 It's important to note that some of the commands run asynchronously, and although these commands can be cancelled using
 their associated `task_id`, this is not a hard termination. It is a request for the command to stop gracefully at the
 next appropriate point.
+
+---
 
 ### HTTP Endpoints
 

@@ -20,6 +20,12 @@
         "password": {
           "type": "string",
           "minLength": 1
+        },
+        "mount_mappings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "required": [

@@ -3,7 +3,7 @@ import logging.config
 import sqlite3
 from contextlib import contextmanager
 from importlib import resources
-from pathlib import Path
+from pathlib import Path, PurePath
 from random import getrandbits
 from sqlite3 import Connection, Cursor
 from typing import Any, Callable, Generator
@@ -57,7 +57,10 @@ def sample_config() -> dict[str, Any]:
             "host": "localhost",
             "port": 1234,
             "username": "admin",
-            "password": "password"
+            "password": "password",
+            "mount_mappings": {
+                "/mock/container_path": "/mock/host_path"
+            }
         },
         "ignore_categories": ["ignore"],
         "racing": {
@@ -134,6 +137,7 @@ def torrent_factory(mock_client_instance: Client) -> Callable[..., TorrentDictio
     def _create_torrent(**kwargs):
         default_values = {
             "category": "race",
+            "content_path": str(PurePath("/mock/container_path")),
             "hash": f"%032x" % getrandbits(160),
             "name": "torrent_name",
             "progress": 0,

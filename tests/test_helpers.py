@@ -46,7 +46,10 @@ def merge_and_remove(original: dict[str, Any], updates: dict[str, Any]) -> None:
         if value is None:
             original.pop(key, None)  # Remove key if it exists
         elif isinstance(value, dict):
-            merge_and_remove(original[key], value)
+            if key in original:
+                merge_and_remove(original[key], value)
+            else:
+                original[key] = value
         else:
             original[key] = value  # Update or add key-value pair
 
